@@ -11,7 +11,6 @@
   import type { DiabeteTipo, Paziente, PreviousEsamiEmaticiMap } from '$lib/db/types';
   import Card from '$lib/components/Card.svelte';
   import Input from '$lib/components/Input.svelte';
-  import Select from '$lib/components/Select.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import PazienteFormModal from '$lib/components/PazienteFormModal.svelte';
   import FattoriRischioCV from '$lib/components/visit-blocks/FattoriRischioCV.svelte';
@@ -69,7 +68,7 @@
   let savingWithReport = false;
   let hasAppliedPreselectedPaziente = false;
 
-  // Opzioni per il select Tipo Visita
+  // Opzioni per il campo Tipo Visita
   const tipoVisitaOptions = [
     { value: 'Prima visita', label: 'Prima visita' },
     { value: 'Controllo', label: 'Controllo' }
@@ -802,14 +801,21 @@
           />
         </div>
         <div class="form-group">
-          <Select
-            id="tipo_visita"
-            label="Tipo Visita"
-            bind:value={formData.tipo_visita}
-            options={tipoVisitaOptions}
-            placeholder="Seleziona tipo visita"
-            required
-          />
+          <span class="field-label">Tipo Visita *</span>
+          <div class="visit-type-radio-group">
+            {#each tipoVisitaOptions as option}
+              <label class="visit-type-radio-option">
+                <input
+                  type="radio"
+                  name="tipo_visita"
+                  value={option.value}
+                  bind:group={formData.tipo_visita}
+                  required
+                />
+                <span>{option.label}</span>
+              </label>
+            {/each}
+          </div>
         </div>
       </div>
       <Input
@@ -1196,6 +1202,30 @@
     font-size: var(--text-sm);
     font-weight: 500;
     color: var(--color-text);
+  }
+
+  .visit-type-radio-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    min-height: 34px;
+    align-items: center;
+    padding: var(--space-2) 0;
+  }
+
+  .visit-type-radio-option {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--color-text);
+    cursor: pointer;
+  }
+
+  .visit-type-radio-option input {
+    margin: 0;
+    cursor: pointer;
   }
 
   .patient-lookup-grid {

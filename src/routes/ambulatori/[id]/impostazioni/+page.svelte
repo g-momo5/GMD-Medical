@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { open } from '@tauri-apps/plugin-dialog';
   import { ambulatorioStore } from '$lib/stores/ambulatorio';
   import { authStore } from '$lib/stores/auth';
   import { sidebarCollapsedStore } from '$lib/stores/sidebar';
@@ -14,6 +15,12 @@
   import UserFormModal from '$lib/components/UserFormModal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import type { User } from '$lib/db/types';
+  import {
+    clearReportBaseDirectory,
+    getDefaultReportBaseDirectory,
+    getReportBaseDirectory,
+    setReportBaseDirectory
+  } from '$lib/utils/report-storage';
 
   $: ambulatorio = $ambulatorioStore.current;
   $: user = $authStore.user;
@@ -29,6 +36,9 @@
   let editingUser: User | null = null;
   let showDeleteModal = false;
   let userToDelete: User | null = null;
+  let reportBaseDirectory = '';
+  let defaultReportBaseDirectory = '';
+  let loadingReportSettings = true;
 
   // Dati form ambulatorio
   let formData = {
@@ -184,6 +194,62 @@
 
   $: if (activeTab === 'utenti' && isAdmin) {
     loadUsers();
+  }
+
+  onMount(() => {
+    loadReportSettings();
+  });
+
+  async function loadReportSettings() {
+    loadingReportSettings = true;
+    try {
+      defaultReportBaseDirectory = await getDefaultReportBaseDirectory();
+      reportBaseDirectory = await getReportBaseDirectory();
+    } catch (error) {
+      console.error('Errore caricamento impostazioni referti:', error);
+      toastStore.show('error', 'Errore durante il caricamento della cartella referti');
+    } finally {
+      loadingReportSettings = false;
+    }
+  }
+
+  async function handleChooseReportDirectory() {
+    try {
+      const selectedPath = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: reportBaseDirectory || defaultReportBaseDirectory,
+        title: 'Seleziona cartella base referti'
+      });
+
+      if (typeof selectedPath !== 'string' || !selectedPath.trim()) {
+        return;
+      }
+
+      reportBaseDirectory = selectedPath.trim();
+      setReportBaseDirectory(reportBaseDirectory);
+      toastStore.show('success', 'Cartella referti aggiornata con successo!');
+    } catch (error) {
+      console.error('Errore selezione cartella referti:', error);
+      toastStore.show('error', 'Errore durante la selezione della cartella referti');
+    }
+  }
+
+  function handleSaveReportDirectory() {
+    if (!reportBaseDirectory.trim()) {
+      toastStore.show('error', 'Inserisci un percorso valido per la cartella referti');
+      return;
+    }
+
+    reportBaseDirectory = reportBaseDirectory.trim();
+    setReportBaseDirectory(reportBaseDirectory);
+    toastStore.show('success', 'Percorso cartella referti salvato!');
+  }
+
+  function handleResetReportDirectory() {
+    clearReportBaseDirectory();
+    reportBaseDirectory = defaultReportBaseDirectory;
+    toastStore.show('success', 'Ripristinato il percorso predefinito dei referti');
   }
 </script>
 
@@ -491,6 +557,47 @@
 
         <div class="system-info">
           <div class="info-section">
+            <h3>Referti</h3>
+
+            {#if loadingReportSettings}
+              <div class="loading-state">Caricamento cartella referti...</div>
+            {:else}
+              <div class="report-settings">
+                <Input
+                  id="reportBaseDirectory"
+                  type="text"
+                  label="Cartella base referti"
+                  bind:value={reportBaseDirectory}
+                  placeholder="Percorso assoluto della cartella referti"
+                />
+
+                <p class="report-help">
+                  I referti vengono salvati automaticamente in una sottocartella per ogni ambulatorio.
+                  Per l'ambulatorio dislipidemie vengono create anche le sottocartelle
+                  <strong> Repatha</strong>, <strong>Praluent</strong>, <strong>Leqvio</strong> e
+                  <strong> Altro</strong>.
+                </p>
+
+                <p class="report-default-path">
+                  Percorso predefinito: <span>{defaultReportBaseDirectory}</span>
+                </p>
+
+                <div class="report-actions">
+                  <button type="button" class="btn-secondary" on:click={handleChooseReportDirectory}>
+                    📁 Scegli Cartella
+                  </button>
+                  <button type="button" class="btn-primary" on:click={handleSaveReportDirectory}>
+                    💾 Salva Percorso
+                  </button>
+                  <button type="button" class="btn-secondary" on:click={handleResetReportDirectory}>
+                    ↺ Ripristina Predefinito
+                  </button>
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <div class="info-section">
             <h3>Applicazione</h3>
             <div class="info-grid">
               <div class="info-item">
@@ -745,6 +852,32 @@
     justify-content: flex-end;
     padding-top: var(--space-4);
     border-top: 1px solid var(--color-border);
+  }
+
+  .report-settings {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .report-help,
+  .report-default-path {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--color-text-secondary);
+    line-height: 1.5;
+  }
+
+  .report-default-path span {
+    font-family: var(--font-mono);
+    color: var(--color-text);
+    word-break: break-all;
+  }
+
+  .report-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
   }
 
   .btn-primary,

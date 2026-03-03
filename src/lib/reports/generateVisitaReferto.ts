@@ -1,9 +1,9 @@
 import Docxtemplater from 'docxtemplater';
 import PizZip from 'pizzip';
-import { save } from '@tauri-apps/plugin-dialog';
-import { readFile, writeFile } from '@tauri-apps/plugin-fs';
-import { resolveResource } from '@tauri-apps/api/path';
+import { mkdir, readFile, writeFile } from '@tauri-apps/plugin-fs';
+import { join, resolveResource } from '@tauri-apps/api/path';
 import { rischioCVOptions } from '$lib/configs/clinical-options';
+import { getAmbulatorioById } from '$lib/db/ambulatori';
 import type {
   EsamiEmaticiValues,
   FirmeVisita,
@@ -13,6 +13,7 @@ import type {
   TitoloFirmaMedico,
   ValutazioneRischioCardiovascolare
 } from '$lib/db/types';
+import { getReportBaseDirectory } from '$lib/utils/report-storage';
 
 const REPORT_TITLE = 'AMBULATORIO CARDIOLOGICO DELLE DISLIPIDEMIE';
 const TEMPLATE_URL = new URL('../templates/template_dislip.docx', import.meta.url).href;
@@ -180,6 +181,17 @@ function sanitizeFileName(value: string): string {
     .replace(/[^a-zA-Z0-9_-]+/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '');
+}
+
+function sanitizeFolderName(value: string): string {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9 _-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return normalized || 'Ambulatorio';
 }
 
 function buildConditionalPair(
@@ -430,6 +442,22 @@ function buildSuggestedFileName(input: GenerateVisitaRefertoInput): string {
   return `referto_dislip_${cognome}_${nome}_${dataVisita}${visitSuffix}.docx`;
 }
 
+function getDislipidemieTerapiaFolderName(terapia: TerapiaIpolipemizzante): string {
+  if (terapia.repatha.enabled) {
+    return 'Repatha';
+  }
+
+  if (terapia.praluent.enabled) {
+    return 'Praluent';
+  }
+
+  if (terapia.leqvio.enabled) {
+    return 'Leqvio';
+  }
+
+  return 'Altro';
+}
+
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -506,21 +534,29 @@ function ensureDocxExtension(filePath: string): string {
   return filePath.toLowerCase().endsWith('.docx') ? filePath : `${filePath}.docx`;
 }
 
-async function resolveOutputPath(input: GenerateVisitaRefertoInput): Promise<string | null> {
-  const filePath = await save({
-    defaultPath: buildSuggestedFileName(input),
-    filters: [
-      {
-        name: 'Documento Word',
-        extensions: ['docx']
-      }
-    ]
-  });
+async function resolveAmbulatorioDirectory(input: GenerateVisitaRefertoInput): Promise<string> {
+  const baseDirectory = await getReportBaseDirectory();
+  const ambulatorio = await getAmbulatorioById(input.paziente.ambulatorio_id);
+  const ambulatorioNome = sanitizeFolderName(
+    ambulatorio?.nome || `Ambulatorio ${input.paziente.ambulatorio_id}`
+  );
 
-  if (!filePath) {
-    return null;
+  let outputDirectory = await join(baseDirectory, ambulatorioNome);
+
+  if (ambulatorio?.nome === 'Ambulatorio Cardiologico delle Dislipidemie') {
+    outputDirectory = await join(
+      outputDirectory,
+      getDislipidemieTerapiaFolderName(input.terapiaIpolipemizzante)
+    );
   }
 
+  await mkdir(outputDirectory, { recursive: true });
+  return outputDirectory;
+}
+
+async function resolveOutputPath(input: GenerateVisitaRefertoInput): Promise<string> {
+  const outputDirectory = await resolveAmbulatorioDirectory(input);
+  const filePath = await join(outputDirectory, buildSuggestedFileName(input));
   return ensureDocxExtension(filePath);
 }
 
@@ -530,10 +566,6 @@ export async function generateVisitaReferto(
   const template = await loadTemplate();
   const content = renderTemplate(template, buildReportData(input));
   const resolvedPath = await resolveOutputPath(input);
-
-  if (!resolvedPath) {
-    return { saved: false };
-  }
 
   await writeFile(resolvedPath, content, { create: true });
 

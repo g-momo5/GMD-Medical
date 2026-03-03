@@ -495,12 +495,21 @@
 
         <div class="form-row">
           <div class="form-group">
-            <label for="tipo_visita">Tipo Visita *</label>
-            <select id="tipo_visita" bind:value={formData.tipo_visita} required>
-              <option value="" disabled>Seleziona tipo visita</option>
-              <option value="Prima visita">Prima visita</option>
-              <option value="Controllo">Controllo</option>
-            </select>
+            <span class="group-label">Tipo Visita *</span>
+            <div class="visit-type-radio-group">
+              {#each tipoVisitaOptions as option}
+                <label class="visit-type-radio-option">
+                  <input
+                    type="radio"
+                    name="visit_modal_tipo_visita"
+                    value={option.value}
+                    bind:group={formData.tipo_visita}
+                    required
+                  />
+                  <span>{option.label}</span>
+                </label>
+              {/each}
+            </div>
           </div>
 
           <div class="form-group">
@@ -751,8 +760,13 @@
     color: var(--color-text-secondary);
   }
 
+  .group-label {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--color-text-secondary);
+  }
+
   .form-group input,
-  .form-group select,
   .form-group textarea {
     padding: var(--space-3);
     border: 1px solid var(--color-border);
@@ -764,7 +778,6 @@
   }
 
   .form-group input:focus,
-  .form-group select:focus,
   .form-group textarea:focus {
     outline: none;
     border-color: var(--color-primary);
@@ -779,6 +792,30 @@
   .form-group textarea {
     resize: vertical;
     min-height: 80px;
+  }
+
+  .visit-type-radio-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    min-height: 46px;
+    align-items: center;
+    padding: var(--space-1) 0;
+  }
+
+  .visit-type-radio-option {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--color-text-primary);
+    cursor: pointer;
+  }
+
+  .visit-type-radio-option input {
+    margin: 0;
+    cursor: pointer;
   }
 
   .autocomplete {

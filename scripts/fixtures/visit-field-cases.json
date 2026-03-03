@@ -1,0 +1,662 @@
+[
+  {
+    "id": "header-control",
+    "name": "Tipo visita controllo",
+    "section": "header",
+    "field": "tipo_visita",
+    "variant": "Controllo",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "formData": {
+          "tipo_visita": "Controllo"
+        }
+      }
+    },
+    "notes": "Verifica la seconda opzione consentita del select."
+  },
+  {
+    "id": "header-missing-type",
+    "name": "Tipo visita mancante",
+    "section": "header",
+    "field": "tipo_visita",
+    "variant": "vuoto",
+    "expectedOutcome": "save-fail",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "formData": {
+          "tipo_visita": ""
+        }
+      }
+    },
+    "notes": "Deve restituire errore di validazione."
+  },
+  {
+    "id": "header-missing-motivo",
+    "name": "Motivo visita mancante",
+    "section": "header",
+    "field": "motivo",
+    "variant": "vuoto",
+    "expectedOutcome": "save-fail",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "formData": {
+          "motivo": ""
+        }
+      }
+    },
+    "notes": "Il motivo e obbligatorio."
+  },
+  {
+    "id": "header-invalid-date-format",
+    "name": "Data visita in formato invalido",
+    "section": "header",
+    "field": "data_visita",
+    "variant": "invalid-date",
+    "expectedOutcome": "save-fail",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "formData": {
+          "data_visita": "invalid-date"
+        }
+      }
+    },
+    "notes": "Deve fallire sul cast TIMESTAMP del database."
+  },
+  {
+    "id": "anthro-height-decimal",
+    "name": "Altezza con decimale",
+    "section": "dati-antropometrici",
+    "field": "altezza",
+    "variant": "179.5",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "formData": {
+          "altezza": "179.5",
+          "bmi": "25.46",
+          "bsa": "2.02"
+        }
+      }
+    },
+    "notes": "Verifica il cast su REAL."
+  },
+  {
+    "id": "anthro-weight-decimal",
+    "name": "Peso con decimale",
+    "section": "dati-antropometrici",
+    "field": "peso",
+    "variant": "82.4",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "formData": {
+          "peso": "82.4",
+          "bmi": "25.43",
+          "bsa": "2.03"
+        }
+      }
+    },
+    "notes": "Verifica il cast su REAL con decimali."
+  },
+  {
+    "id": "anthro-height-empty",
+    "name": "Altezza vuota",
+    "section": "dati-antropometrici",
+    "field": "altezza",
+    "variant": "vuoto",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "formData": {
+          "altezza": "",
+          "bmi": "",
+          "bsa": ""
+        }
+      }
+    },
+    "notes": "Il salvataggio deve accettare il null sui campi REAL opzionali."
+  },
+  {
+    "id": "anthro-weight-empty",
+    "name": "Peso vuoto",
+    "section": "dati-antropometrici",
+    "field": "peso",
+    "variant": "vuoto",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "formData": {
+          "peso": "",
+          "bmi": "",
+          "bsa": ""
+        }
+      }
+    },
+    "notes": "Il salvataggio deve accettare il null sul peso."
+  },
+  {
+    "id": "risk-diabetes-type-1",
+    "name": "Diabete tipo 1",
+    "section": "fattori-rischio-cv",
+    "field": "diabete_tipo",
+    "variant": "1",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "fattoriRischio": {
+          "diabete": true,
+          "diabete_tipo": "1",
+          "diabete_durata": "Da 5 anni"
+        }
+      }
+    },
+    "notes": "Crea anche la riga collegata dei fattori di rischio."
+  },
+  {
+    "id": "risk-diabetes-missing-type",
+    "name": "Diabete senza tipo",
+    "section": "fattori-rischio-cv",
+    "field": "diabete_tipo",
+    "variant": "vuoto",
+    "expectedOutcome": "save-fail",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "fattoriRischio": {
+          "diabete": true,
+          "diabete_tipo": "",
+          "diabete_durata": "Da 5 anni"
+        }
+      }
+    },
+    "notes": "Deve fallire per validazione."
+  },
+  {
+    "id": "risk-ex-smoker",
+    "name": "Ex fumatore con eta",
+    "section": "fattori-rischio-cv",
+    "field": "fumo",
+    "variant": "ex",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "fattoriRischio": {
+          "fumo": "ex",
+          "fumo_ex_eta": "40 anni"
+        }
+      }
+    },
+    "notes": "Verifica i campi testo opzionali correlati."
+  },
+  {
+    "id": "risk-familiarita-note",
+    "name": "Familiarita con nota",
+    "section": "fattori-rischio-cv",
+    "field": "familiarita_note",
+    "variant": "positiva",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "fattoriRischio": {
+          "familiarita": true,
+          "familiarita_note": "Padre con evento coronarico precoce"
+        }
+      }
+    },
+    "notes": "Verifica persistenza e serializzazione del campo nota."
+  },
+  {
+    "id": "risk-ipertensione",
+    "name": "Ipertensione attiva",
+    "section": "fattori-rischio-cv",
+    "field": "ipertensione",
+    "variant": "true",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "fattoriRischio": {
+          "ipertensione": true
+        }
+      }
+    },
+    "notes": "Verifica il cast booleano in tabella collegata."
+  },
+  {
+    "id": "risk-diabetes-type-2",
+    "name": "Diabete tipo 2",
+    "section": "fattori-rischio-cv",
+    "field": "diabete_tipo",
+    "variant": "2",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "fattoriRischio": {
+          "diabete": true,
+          "diabete_tipo": "2",
+          "diabete_durata": "Da 10 anni"
+        }
+      }
+    },
+    "notes": "Copre anche la seconda opzione ammessa di diabete."
+  },
+  {
+    "id": "risk-active-smoker",
+    "name": "Fumo attivo",
+    "section": "fattori-rischio-cv",
+    "field": "fumo",
+    "variant": "si",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "fattoriRischio": {
+          "fumo": "si",
+          "fumo_ex_eta": ""
+        }
+      }
+    },
+    "notes": "Verifica il salvataggio del fumo attivo."
+  },
+  {
+    "id": "text-anamnesi-multiline",
+    "name": "Anamnesi multilinea",
+    "section": "blocchi-testuali",
+    "field": "anamnesi_cardiologica",
+    "variant": "multilinea",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "anamnesiCardiologica": "Prima riga.\nSeconda riga.\nTerza riga."
+      }
+    },
+    "notes": "Verifica il cast su TEXT con ritorni a capo."
+  },
+  {
+    "id": "text-terapia-domiciliare-empty",
+    "name": "Terapia domiciliare vuota",
+    "section": "blocchi-testuali",
+    "field": "terapia_domiciliare",
+    "variant": "vuoto",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "terapiaDomiciliare": ""
+      }
+    },
+    "notes": "Il campo testuale opzionale deve poter andare a null."
+  },
+  {
+    "id": "text-conclusioni-markdown",
+    "name": "Conclusioni con markdown",
+    "section": "blocchi-testuali",
+    "field": "conclusioni",
+    "variant": "markdown",
+    "expectedOutcome": "report-success",
+    "generateReport": true,
+    "patch": {
+      "visita": {
+        "conclusioni": "**Target non raggiunto**\n\nSi suggerisce _ottimizzazione_ terapeutica."
+      }
+    },
+    "notes": "Il referto deve pulire il markdown senza errore."
+  },
+  {
+    "id": "text-note-multiline",
+    "name": "Note multilinea",
+    "section": "blocchi-testuali",
+    "field": "note",
+    "variant": "multilinea",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "formData": {
+          "note": "Prima nota.\nSeconda nota.\nTerza nota."
+        }
+      }
+    },
+    "notes": "Verifica serializzazione del campo note."
+  },
+  {
+    "id": "json-esami-empty",
+    "name": "Esami ematici vuoti",
+    "section": "blocchi-json",
+    "field": "esami_ematici",
+    "variant": "vuoto",
+    "expectedOutcome": "report-success",
+    "generateReport": true,
+    "patch": {
+      "visita": {
+        "esamiEmatici": {
+          "hb": "",
+          "plt": "",
+          "creatinina": "",
+          "egfr": "",
+          "colesterolo_totale": "",
+          "hdl": "",
+          "trigliceridi": "",
+          "ldl_calcolato": "",
+          "ldl_diretto": "",
+          "lipoproteina_a": "",
+          "emoglobina_glicata": "",
+          "glicemia": "",
+          "ast": "",
+          "alt": "",
+          "bilirubina_totale": "",
+          "cpk": ""
+        }
+      }
+    },
+    "notes": "Il referto deve usare 'Non in visione'."
+  },
+  {
+    "id": "json-esami-complete-report",
+    "name": "Esami ematici completi con referto",
+    "section": "blocchi-json",
+    "field": "esami_ematici",
+    "variant": "completo",
+    "expectedOutcome": "report-success",
+    "generateReport": true,
+    "patch": {
+      "visita": {
+        "esamiEmatici": {
+          "hb": "13.9",
+          "plt": "250",
+          "creatinina": "1.02",
+          "egfr": "88",
+          "colesterolo_totale": "155",
+          "hdl": "52",
+          "trigliceridi": "110",
+          "ldl_calcolato": "",
+          "ldl_diretto": "68",
+          "lipoproteina_a": "12",
+          "emoglobina_glicata": "5.3",
+          "glicemia": "89",
+          "ast": "18",
+          "alt": "21",
+          "bilirubina_totale": "0.6",
+          "cpk": "95"
+        },
+        "valutazioneRischioCV": {
+          "rischio": "alto",
+          "targetLdl": 70,
+          "ldlAttuale": 68,
+          "ldlSource": "diretto",
+          "status": "raggiunto",
+          "statusMessage": "Target raggiunto"
+        }
+      }
+    },
+    "notes": "Il referto deve compilare sia ee sia target a target."
+  },
+  {
+    "id": "json-ecocardio-referto",
+    "name": "Ecocardiografia con referto",
+    "section": "blocchi-json",
+    "field": "ecocardiografia",
+    "variant": "referto",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "ecocardiografia": {
+          "referto": "Frazione di eiezione conservata."
+        }
+      }
+    },
+    "notes": "Verifica serializzazione JSON in testo."
+  },
+  {
+    "id": "json-ecocardio-empty-object",
+    "name": "Ecocardiografia vuota",
+    "section": "blocchi-json",
+    "field": "ecocardiografia",
+    "variant": "empty-object",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "ecocardiografia": {}
+      }
+    },
+    "notes": "L'oggetto vuoto non deve rompere il salvataggio."
+  },
+  {
+    "id": "json-fh-enabled",
+    "name": "FH assessment abilitato",
+    "section": "blocchi-json",
+    "field": "fh_assessment",
+    "variant": "enabled",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "fhAssessment": {
+          "enabled": true,
+          "familyHistoryOnePoint": true,
+          "familyHistoryTwoPoints": false,
+          "clinicalPrematureCAD": false,
+          "clinicalPrematureCerebralOrPeripheral": false,
+          "physicalTendonXanthomas": false,
+          "physicalCornealArcusBefore45": false,
+          "untreatedLdlRange": "190-249",
+          "geneticMutation": false,
+          "totalScore": 3,
+          "classification": "Possibile"
+        }
+      }
+    },
+    "notes": "Verifica il blocco FH non vuoto."
+  },
+  {
+    "id": "json-terapia-ipolipemizzante-minimal",
+    "name": "Terapia ipolipemizzante minima",
+    "section": "blocchi-json",
+    "field": "terapia_ipolipemizzante",
+    "variant": "minimal",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "terapiaIpolipemizzante": {
+          "statine": {
+            "enabled": true,
+            "dose": "Rosuvastatina 20 mg"
+          },
+          "ezetimibe": {
+            "enabled": false,
+            "modalita": ""
+          },
+          "fibrati": {
+            "enabled": false,
+            "dose": ""
+          },
+          "omega3": {
+            "enabled": false,
+            "dose": ""
+          },
+          "acido_bempedoico": {
+            "enabled": false,
+            "dose": ""
+          },
+          "repatha": {
+            "enabled": false,
+            "dose": ""
+          },
+          "praluent": {
+            "enabled": false,
+            "dose": ""
+          },
+          "leqvio": {
+            "enabled": false,
+            "dose": ""
+          }
+        }
+      }
+    },
+    "notes": "Copre un payload JSON piu minimale della baseline."
+  },
+  {
+    "id": "json-rischio-non-valutabile",
+    "name": "Rischio cardiovascolare non valutabile",
+    "section": "blocchi-json",
+    "field": "valutazione_rischio_cv",
+    "variant": "non-valutabile",
+    "expectedOutcome": "save-success",
+    "generateReport": false,
+    "patch": {
+      "visita": {
+        "valutazioneRischioCV": {
+          "rischio": "",
+          "targetLdl": null,
+          "ldlAttuale": null,
+          "ldlSource": "",
+          "status": "non_valutabile",
+          "statusMessage": "Seleziona il rischio cardiovascolare"
+        }
+      }
+    },
+    "notes": "Verifica il salvataggio del blocco in stato neutro."
+  },
+  {
+    "id": "signatures-three-trainees",
+    "name": "Tre specializzandi",
+    "section": "firme",
+    "field": "mediciInFormazione",
+    "variant": "3",
+    "expectedOutcome": "report-success",
+    "generateReport": true,
+    "patch": {
+      "visita": {
+        "firmeVisita": {
+          "cardiologoNome": "Mario Rossi",
+          "cardiologoTitolo": "dott.ssa",
+          "mediciInFormazione": [
+            {
+              "nome": "Luca Bianchi",
+              "titolo": "dott"
+            },
+            {
+              "nome": "Sara Neri",
+              "titolo": "dott.ssa"
+            },
+            {
+              "nome": "Paolo Gialli",
+              "titolo": "dott"
+            }
+          ]
+        }
+      }
+    },
+    "notes": "Il referto deve accettare fino a tre medici in formazione."
+  },
+  {
+    "id": "signatures-cardiologo-female-only",
+    "name": "Solo cardiologa dott.ssa",
+    "section": "firme",
+    "field": "cardiologoTitolo",
+    "variant": "dott.ssa",
+    "expectedOutcome": "report-success",
+    "generateReport": true,
+    "patch": {
+      "visita": {
+        "firmeVisita": {
+          "cardiologoNome": "Elena Rossi",
+          "cardiologoTitolo": "dott.ssa",
+          "mediciInFormazione": []
+        }
+      }
+    },
+    "notes": "Verifica il referto con sola firma del cardiologo."
+  },
+  {
+    "id": "signatures-overflow-trainees",
+    "name": "Quattro specializzandi",
+    "section": "firme",
+    "field": "mediciInFormazione",
+    "variant": "4",
+    "expectedOutcome": "report-success",
+    "generateReport": true,
+    "patch": {
+      "visita": {
+        "firmeVisita": {
+          "cardiologoNome": "Mario Rossi",
+          "cardiologoTitolo": "dott",
+          "mediciInFormazione": [
+            {
+              "nome": "Luca Bianchi",
+              "titolo": "dott"
+            },
+            {
+              "nome": "Sara Neri",
+              "titolo": "dott.ssa"
+            },
+            {
+              "nome": "Paolo Gialli",
+              "titolo": "dott"
+            },
+            {
+              "nome": "Maria Viola",
+              "titolo": "dott.ssa"
+            }
+          ]
+        }
+      }
+    },
+    "notes": "Dal quarto in poi non deve andare in errore."
+  },
+  {
+    "id": "followup-empty-next-visit",
+    "name": "Follow-up senza prossima visita",
+    "section": "follow-up",
+    "field": "dataOraProssimaVisita",
+    "variant": "vuoto",
+    "expectedOutcome": "report-success",
+    "generateReport": true,
+    "patch": {
+      "visita": {
+        "pianificazioneFollowUp": {
+          "dataOraProssimaVisita": "",
+          "motivoProssimaVisita": "",
+          "esamiEmaticiDaFare": "Profilo lipidico"
+        }
+      }
+    },
+    "notes": "Il referto deve scrivere 'Non programmata'."
+  },
+  {
+    "id": "followup-full-custom",
+    "name": "Follow-up completo personalizzato",
+    "section": "follow-up",
+    "field": "motivoProssimaVisita",
+    "variant": "completo",
+    "expectedOutcome": "report-success",
+    "generateReport": true,
+    "patch": {
+      "visita": {
+        "pianificazioneFollowUp": {
+          "dataOraProssimaVisita": "2026-09-01T08:45",
+          "motivoProssimaVisita": "Rivalutazione target LDL e aderenza terapeutica",
+          "esamiEmaticiDaFare": "LDL diretto, ALT, AST, CPK, lipoproteina a"
+        }
+      }
+    },
+    "notes": "Verifica il referto con tutti i campi follow-up valorizzati."
+  }
+]

@@ -1,0 +1,348 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { authStore } from '$lib/stores/auth';
+  import { authenticateUser } from '$lib/db/auth';
+  import Button from '$lib/components/Button.svelte';
+  import Input from '$lib/components/Input.svelte';
+
+  let username = '';
+  let password = '';
+  let error = '';
+  let loading = false;
+  let rememberMe = false;
+  let showPassword = false;
+
+  function getErrorMessage(err: unknown): string {
+    if (err instanceof Error && err.message) {
+      return err.message;
+    }
+
+    if (typeof err === 'string' && err.trim()) {
+      return err;
+    }
+
+    if (err && typeof err === 'object') {
+      const maybeMessage = 'message' in err ? (err as { message?: unknown }).message : undefined;
+      if (typeof maybeMessage === 'string' && maybeMessage.trim()) {
+        return maybeMessage;
+      }
+
+      try {
+        const serialized = JSON.stringify(err);
+        if (serialized && serialized !== '{}') {
+          return serialized;
+        }
+      } catch {
+        // ignore JSON serialization failures
+      }
+    }
+
+    return 'Errore sconosciuto';
+  }
+
+  onMount(() => {
+    // Carica credenziali salvate se presenti
+    if (typeof window !== 'undefined') {
+      const savedUsername = localStorage.getItem('gmd_saved_username');
+      const savedPassword = localStorage.getItem('gmd_saved_password');
+      if (savedUsername) {
+        username = savedUsername;
+        rememberMe = true;
+      }
+      if (savedPassword) {
+        password = savedPassword;
+      }
+    }
+
+    // Se già autenticato, vai alla selezione ambulatorio
+    const unsubscribe = authStore.subscribe((state) => {
+      if (state.isAuthenticated) {
+        goto('/ambulatori');
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  });
+
+  async function handleLogin() {
+    error = '';
+    loading = true;
+
+    try {
+      console.log('Tentativo login con username:', username);
+
+      if (!username || !password) {
+        error = 'Inserisci username e password';
+        loading = false;
+        return;
+      }
+
+      console.log('Chiamata authenticateUser...');
+      const user = await authenticateUser(username, password);
+      console.log('Risultato authenticateUser:', user);
+
+      if (user) {
+        console.log('Login riuscito!');
+
+        // Salva credenziali se "Ricordami" è attivo
+        if (typeof window !== 'undefined') {
+          if (rememberMe) {
+            localStorage.setItem('gmd_saved_username', username);
+            localStorage.setItem('gmd_saved_password', password);
+          } else {
+            localStorage.removeItem('gmd_saved_username');
+            localStorage.removeItem('gmd_saved_password');
+          }
+        }
+
+        authStore.login(user);
+        goto('/ambulatori');
+      } else {
+        console.log('Credenziali non valide');
+        error = 'Credenziali non valide';
+      }
+    } catch (err) {
+      console.error('Errore login completo:', err);
+      console.error('Stack trace:', err instanceof Error ? err.stack : undefined);
+      error = `Errore: ${getErrorMessage(err)}`;
+    } finally {
+      loading = false;
+    }
+  }
+
+  function handleKeyPress(e: Event) {
+    const keyEvent = e as KeyboardEvent;
+    if (keyEvent.key === 'Enter') {
+      handleLogin();
+    }
+  }
+</script>
+
+<div class="login-page">
+  <div class="login-container">
+    <div class="login-card">
+      <div class="logo-container">
+        <img src="/logo_aziendale.png" alt="GMD Medical" class="logo" />
+      </div>
+
+      <h1 class="title">Benvenuto</h1>
+      <p class="subtitle">Accedi alla piattaforma GMD Medical</p>
+
+      <form on:submit|preventDefault={handleLogin} class="login-form">
+        <Input
+          id="username"
+          type="text"
+          label="Username"
+          bind:value={username}
+          placeholder="Inserisci username"
+          required
+          on:keypress={handleKeyPress}
+        />
+
+        <div class="password-field">
+          <Input
+            id="password"
+            type={showPassword ? 'text' : 'password'}
+            label="Password"
+            bind:value={password}
+            placeholder="Inserisci password"
+            required
+            on:keypress={handleKeyPress}
+          />
+          <button
+            type="button"
+            class="password-toggle"
+            on:click={() => (showPassword = !showPassword)}
+            aria-label={showPassword ? 'Nascondi password' : 'Mostra password'}
+          >
+            {#if showPassword}
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                <line x1="1" y1="1" x2="23" y2="23"/>
+              </svg>
+            {:else}
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            {/if}
+          </button>
+        </div>
+
+        <div class="remember-me">
+          <label class="checkbox-label">
+            <input type="checkbox" bind:checked={rememberMe} />
+            <span>Ricordami</span>
+          </label>
+        </div>
+
+        {#if error}
+          <div class="error-banner">
+            {error}
+          </div>
+        {/if}
+
+        <Button type="submit" variant="primary" size="lg" fullWidth disabled={loading}>
+          {loading ? 'Accesso in corso...' : 'Accedi'}
+        </Button>
+      </form>
+
+      <div class="login-footer">
+        <p class="demo-credentials">
+          <strong>Demo:</strong> username: <code>admin</code> | password: <code>admin123</code>
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .login-page {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, var(--gmd-navy) 0%, var(--gmd-blue) 50%, var(--gmd-cyan) 100%);
+    padding: var(--space-6);
+  }
+
+  .login-container {
+    width: 100%;
+    max-width: 450px;
+  }
+
+  .login-card {
+    background: var(--color-bg);
+    border-radius: var(--radius-2xl);
+    box-shadow: var(--shadow-xl);
+    padding: var(--space-10);
+    animation: slideUp 0.4s ease-out;
+  }
+
+  .logo-container {
+    text-align: center;
+    margin-bottom: var(--space-8);
+  }
+
+  .logo {
+    height: 80px;
+    width: auto;
+  }
+
+  .title {
+    text-align: center;
+    font-size: var(--text-3xl);
+    color: var(--color-text);
+    margin-bottom: var(--space-2);
+  }
+
+  .subtitle {
+    text-align: center;
+    color: var(--color-text-secondary);
+    margin-bottom: var(--space-8);
+  }
+
+  .login-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+  }
+
+  .password-field {
+    position: relative;
+  }
+
+  .password-toggle {
+    position: absolute;
+    right: var(--space-3);
+    top: 50%;
+    transform: translateY(-10%);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: var(--space-2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    transition: color var(--transition-fast);
+  }
+
+  .password-toggle:hover {
+    color: var(--color-primary);
+  }
+
+  .password-toggle svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .remember-me {
+    margin-top: calc(var(--space-2) * -1);
+  }
+
+  .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    cursor: pointer;
+    font-size: var(--text-sm);
+    color: var(--color-text);
+  }
+
+  .checkbox-label input[type='checkbox'] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: var(--color-primary);
+  }
+
+  .checkbox-label:hover span {
+    color: var(--color-primary);
+  }
+
+  .error-banner {
+    padding: var(--space-4);
+    background-color: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: var(--radius-lg);
+    color: var(--color-error);
+    font-size: var(--text-sm);
+    text-align: center;
+  }
+
+  .login-footer {
+    margin-top: var(--space-6);
+    padding-top: var(--space-6);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .demo-credentials {
+    text-align: center;
+    font-size: var(--text-sm);
+    color: var(--color-text-secondary);
+    margin: 0;
+  }
+
+  .demo-credentials code {
+    background-color: var(--color-bg-secondary);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(30px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+</style>

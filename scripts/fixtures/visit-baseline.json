@@ -1,0 +1,140 @@
+{
+  "paziente": {
+    "nome": "Test",
+    "cognome": "E2E",
+    "data_nascita": "1985-06-18",
+    "luogo_nascita": "Sassari",
+    "codice_fiscale": "TSTEET85H18I452Z",
+    "sesso": "M",
+    "esenzioni": "",
+    "indirizzo": "Via Test 1",
+    "citta": "Sassari",
+    "cap": "07100",
+    "provincia": "SS",
+    "telefono": "3331234567",
+    "email": "test-e2e@example.com"
+  },
+  "visita": {
+    "formData": {
+      "data_visita": "2026-03-02T09:00",
+      "tipo_visita": "Prima visita",
+      "motivo": "Controllo dislipidemia familiare",
+      "altezza": "180",
+      "peso": "82",
+      "bmi": "25.31",
+      "bsa": "2.03",
+      "anamnesi": "Anamnesi generale senza elementi critici.",
+      "esame_obiettivo": "Esame obiettivo nella norma.",
+      "diagnosi": "Dislipidemia mista.",
+      "terapia": "Nessuna variazione terapeutica.",
+      "note": "Caso di prova automatizzato."
+    },
+    "fattoriRischio": {
+      "familiarita": false,
+      "familiarita_note": "",
+      "ipertensione": false,
+      "diabete": false,
+      "diabete_durata": "",
+      "diabete_tipo": "",
+      "dislipidemia": true,
+      "obesita": false,
+      "fumo": "",
+      "fumo_ex_eta": ""
+    },
+    "anamnesiCardiologica": "Anamnesi patologica remota di rilievo negativo.",
+    "terapiaIpolipemizzante": {
+      "statine": {
+        "enabled": true,
+        "dose": "Atorvastatina 40 mg"
+      },
+      "ezetimibe": {
+        "enabled": true,
+        "modalita": "10 mg/die"
+      },
+      "fibrati": {
+        "enabled": false,
+        "dose": ""
+      },
+      "omega3": {
+        "enabled": false,
+        "dose": ""
+      },
+      "acido_bempedoico": {
+        "enabled": false,
+        "dose": ""
+      },
+      "repatha": {
+        "enabled": false,
+        "dose": ""
+      },
+      "praluent": {
+        "enabled": false,
+        "dose": ""
+      },
+      "leqvio": {
+        "enabled": false,
+        "dose": ""
+      }
+    },
+    "terapiaDomiciliare": "Ramipril 5 mg die.",
+    "valutazioneOdierna": "Paziente stabile, buon compenso clinico.",
+    "esamiEmatici": {
+      "hb": "14.2",
+      "plt": "230",
+      "creatinina": "0.95",
+      "egfr": "96",
+      "colesterolo_totale": "189",
+      "hdl": "49",
+      "trigliceridi": "130",
+      "ldl_calcolato": "102",
+      "ldl_diretto": "",
+      "lipoproteina_a": "18",
+      "emoglobina_glicata": "5.5",
+      "glicemia": "92",
+      "ast": "22",
+      "alt": "28",
+      "bilirubina_totale": "0.7",
+      "cpk": "101"
+    },
+    "ecocardiografia": {
+      "referto": "Ecocardiogramma nei limiti."
+    },
+    "fhAssessment": {
+      "enabled": false,
+      "familyHistoryOnePoint": false,
+      "familyHistoryTwoPoints": false,
+      "clinicalPrematureCAD": false,
+      "clinicalPrematureCerebralOrPeripheral": false,
+      "physicalTendonXanthomas": false,
+      "physicalCornealArcusBefore45": false,
+      "untreatedLdlRange": "",
+      "geneticMutation": false,
+      "totalScore": 0,
+      "classification": "Improbabile"
+    },
+    "valutazioneRischioCV": {
+      "rischio": "alto",
+      "targetLdl": 70,
+      "ldlAttuale": 102,
+      "ldlSource": "calcolato",
+      "status": "non_raggiunto",
+      "statusMessage": "Target non raggiunto"
+    },
+    "conclusioni": "Si consiglia prosecuzione del follow-up clinico.",
+    "pianificazioneFollowUp": {
+      "dataOraProssimaVisita": "2026-06-15T10:30",
+      "motivoProssimaVisita": "Controllo periodico",
+      "esamiEmaticiDaFare": "Profilo lipidico, AST, ALT, CPK"
+    },
+    "firmeVisita": {
+      "cardiologoNome": "Mario Rossi",
+      "cardiologoTitolo": "dott",
+      "mediciInFormazione": [
+        {
+          "nome": "Giulia Verdi",
+          "titolo": "dott.ssa"
+        }
+      ]
+    }
+  }
+}

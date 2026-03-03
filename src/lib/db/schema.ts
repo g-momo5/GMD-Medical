@@ -1,7 +1,6 @@
 // GMD Medical Platform - Database Schema
 import type Database from '@tauri-apps/plugin-sql';
 import { loadDatabase, getLoadedDatabase, resetLoadedDatabase } from './client';
-import { importLegacySqliteDataIfNeeded } from './legacy-import';
 import { applyMigrations } from './migrations';
 
 let initPromise: Promise<Database> | null = null;
@@ -84,7 +83,6 @@ export function getDatabase(): Database {
 async function initializeDatabase(): Promise<Database> {
   const db = await loadDatabase();
   await applyMigrations(db);
-  await importLegacySqliteDataIfNeeded(db);
   await ensureBootstrapData(db);
   return db;
 }
@@ -101,14 +99,14 @@ async function ensureBootstrapData(db: Database): Promise<void> {
 
   await db.execute(
     `INSERT INTO users (username, password_hash, role, nome, cognome)
-     VALUES ($1, $2, $3, $4, $5)`,
+     VALUES (?, ?, ?, ?, ?)`,
     ['admin', adminPasswordHash, 'admin', 'Admin', 'GMD']
   );
 
   for (const ambulatorio of ambulatoriDemo) {
     await db.execute(
       `INSERT INTO ambulatori (nome, logo_path, color_primary, color_secondary, color_accent)
-       VALUES ($1, $2, $3, $4, $5)`,
+       VALUES (?, ?, ?, ?, ?)`,
       [
         ambulatorio.nome,
         ambulatorio.logo_path,
@@ -124,7 +122,7 @@ async function ensureBootstrapData(db: Database): Promise<void> {
       `INSERT INTO pazienti (
         ambulatorio_id, nome, cognome, data_nascita, luogo_nascita,
         codice_fiscale, sesso, esenzioni, indirizzo, citta, cap, provincia
-      ) VALUES ($1, $2, $3, CAST($4 AS DATE), $5, $6, $7, $8, $9, $10, $11, $12)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         paziente.ambulatorio_id,
         paziente.nome,

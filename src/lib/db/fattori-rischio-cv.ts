@@ -25,16 +25,11 @@ function normalizeBoolean(value: Booleanish): boolean {
   return false;
 }
 
-function normalizeBooleanForWrite(value: Booleanish): 'true' | 'false' {
-  return normalizeBoolean(value) ? 'true' : 'false';
+function normalizeBooleanForWrite(value: Booleanish): 1 | 0 {
+  return normalizeBoolean(value) ? 1 : 0;
 }
 
-function pushField(fields: string[], values: unknown[], column: string, value: unknown) {
-  values.push(value);
-  fields.push(`${column} = $${values.length}`);
-}
-
-function normalizeIntegerForWrite(value: number | string | null | undefined): string | null {
+function normalizeIntegerForWrite(value: number | string | null | undefined): number | null {
   if (value === null || value === undefined) {
     return null;
   }
@@ -44,17 +39,7 @@ function normalizeIntegerForWrite(value: number | string | null | undefined): st
     throw new Error(`Valore intero non valido: ${value}`);
   }
 
-  return String(normalized);
-}
-
-function pushIntegerField(
-  fields: string[],
-  values: unknown[],
-  column: string,
-  value: number | string | null | undefined
-) {
-  values.push(normalizeIntegerForWrite(value));
-  fields.push(`${column} = CAST($${values.length} AS INTEGER)`);
+  return normalized;
 }
 
 function coerceText(value: unknown): string {
@@ -90,19 +75,9 @@ function normalizeRequiredTextForWrite(value: unknown): string {
   return coerceText(value);
 }
 
-function pushTextField(fields: string[], values: unknown[], column: string, value: unknown) {
-  values.push(normalizeTextForWrite(value));
-  fields.push(`${column} = CAST($${values.length} AS TEXT)`);
-}
-
-function pushRequiredTextField(fields: string[], values: unknown[], column: string, value: unknown) {
-  values.push(normalizeRequiredTextForWrite(value));
-  fields.push(`${column} = CAST($${values.length} AS TEXT)`);
-}
-
-function pushBooleanField(fields: string[], values: unknown[], column: string, value: Booleanish) {
-  values.push(normalizeBooleanForWrite(value));
-  fields.push(`${column} = CAST($${values.length} AS BOOLEAN)`);
+function pushField(fields: string[], values: unknown[], column: string, value: unknown) {
+  values.push(value);
+  fields.push(`${column} = ?`);
 }
 
 export async function createFattoriRischioCV(
@@ -123,20 +98,7 @@ export async function createFattoriRischioCV(
       obesita,
       fumo,
       fumo_ex_eta
-    ) VALUES (
-      CAST($1 AS INTEGER),
-      CAST($2 AS BOOLEAN),
-      CAST($3 AS TEXT),
-      CAST($4 AS BOOLEAN),
-      CAST($5 AS BOOLEAN),
-      CAST($6 AS TEXT),
-      CAST($7 AS TEXT),
-      CAST($8 AS BOOLEAN),
-      CAST($9 AS BOOLEAN),
-      CAST($10 AS TEXT),
-      CAST($11 AS TEXT)
-    )
-    RETURNING id`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       normalizeIntegerForWrite(data.visita_id),
       normalizeBooleanForWrite(data.familiarita),
@@ -183,7 +145,7 @@ export async function getFattoriRischioCVByVisitaId(
       created_at,
       updated_at
     FROM fattori_rischio_cv
-    WHERE visita_id = CAST($1 AS INTEGER)`,
+    WHERE visita_id = ?`,
     [normalizeIntegerForWrite(visitaId)]
   );
 
@@ -212,37 +174,37 @@ export async function updateFattoriRischioCV(
   const values: unknown[] = [];
 
   if (data.visita_id !== undefined) {
-    pushIntegerField(fields, values, 'visita_id', data.visita_id);
+    pushField(fields, values, 'visita_id', normalizeIntegerForWrite(data.visita_id));
   }
   if (data.familiarita !== undefined) {
-    pushBooleanField(fields, values, 'familiarita', data.familiarita);
+    pushField(fields, values, 'familiarita', normalizeBooleanForWrite(data.familiarita));
   }
   if (data.familiarita_note !== undefined) {
-    pushTextField(fields, values, 'familiarita_note', data.familiarita_note);
+    pushField(fields, values, 'familiarita_note', normalizeTextForWrite(data.familiarita_note));
   }
   if (data.ipertensione !== undefined) {
-    pushBooleanField(fields, values, 'ipertensione', data.ipertensione);
+    pushField(fields, values, 'ipertensione', normalizeBooleanForWrite(data.ipertensione));
   }
   if (data.diabete !== undefined) {
-    pushBooleanField(fields, values, 'diabete', data.diabete);
+    pushField(fields, values, 'diabete', normalizeBooleanForWrite(data.diabete));
   }
   if (data.diabete_durata !== undefined) {
-    pushTextField(fields, values, 'diabete_durata', data.diabete_durata);
+    pushField(fields, values, 'diabete_durata', normalizeTextForWrite(data.diabete_durata));
   }
   if (data.diabete_tipo !== undefined) {
-    pushRequiredTextField(fields, values, 'diabete_tipo', data.diabete_tipo ?? '');
+    pushField(fields, values, 'diabete_tipo', normalizeRequiredTextForWrite(data.diabete_tipo ?? ''));
   }
   if (data.dislipidemia !== undefined) {
-    pushBooleanField(fields, values, 'dislipidemia', data.dislipidemia);
+    pushField(fields, values, 'dislipidemia', normalizeBooleanForWrite(data.dislipidemia));
   }
   if (data.obesita !== undefined) {
-    pushBooleanField(fields, values, 'obesita', data.obesita);
+    pushField(fields, values, 'obesita', normalizeBooleanForWrite(data.obesita));
   }
   if (data.fumo !== undefined) {
-    pushRequiredTextField(fields, values, 'fumo', data.fumo ?? '');
+    pushField(fields, values, 'fumo', normalizeRequiredTextForWrite(data.fumo ?? ''));
   }
   if (data.fumo_ex_eta !== undefined) {
-    pushTextField(fields, values, 'fumo_ex_eta', data.fumo_ex_eta);
+    pushField(fields, values, 'fumo_ex_eta', normalizeTextForWrite(data.fumo_ex_eta));
   }
 
   if (fields.length === 0) {
@@ -255,21 +217,21 @@ export async function updateFattoriRischioCV(
   await db.execute(
     `UPDATE fattori_rischio_cv
      SET ${fields.join(', ')}
-     WHERE id = CAST($${values.length} AS INTEGER)`,
+     WHERE id = ?`,
     values
   );
 }
 
 export async function deleteFattoriRischioCV(id: number): Promise<void> {
   const db = await initDatabase();
-  await db.execute('DELETE FROM fattori_rischio_cv WHERE id = CAST($1 AS INTEGER)', [
+  await db.execute('DELETE FROM fattori_rischio_cv WHERE id = ?', [
     normalizeIntegerForWrite(id)
   ]);
 }
 
 export async function deleteFattoriRischioCVByVisitaId(visitaId: number): Promise<void> {
   const db = await initDatabase();
-  await db.execute('DELETE FROM fattori_rischio_cv WHERE visita_id = CAST($1 AS INTEGER)', [
+  await db.execute('DELETE FROM fattori_rischio_cv WHERE visita_id = ?', [
     normalizeIntegerForWrite(visitaId)
   ]);
 }

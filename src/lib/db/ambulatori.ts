@@ -3,7 +3,7 @@ import { insertReturningId } from './client';
 import { initDatabase } from './schema';
 import type { Ambulatorio } from './types';
 
-function normalizeIntegerForWrite(value: number | string | null | undefined): string | null {
+function normalizeIntegerForWrite(value: number | string | null | undefined): number | null {
   if (value === null || value === undefined) {
     return null;
   }
@@ -13,7 +13,7 @@ function normalizeIntegerForWrite(value: number | string | null | undefined): st
     throw new Error(`Valore intero non valido: ${value}`);
   }
 
-  return String(normalized);
+  return normalized;
 }
 
 export async function getAllAmbulatori(): Promise<Ambulatorio[]> {
@@ -26,7 +26,7 @@ export async function getAllAmbulatori(): Promise<Ambulatorio[]> {
 export async function getAmbulatorioById(id: number): Promise<Ambulatorio | null> {
   const db = await initDatabase();
   const result = await db.select<Ambulatorio[]>(
-    'SELECT * FROM ambulatori WHERE id = CAST($1 AS INTEGER)',
+    'SELECT * FROM ambulatori WHERE id = ?',
     [normalizeIntegerForWrite(id)]
   );
   return result[0] || null;
@@ -41,8 +41,7 @@ export async function createAmbulatorio(
 ): Promise<number> {
   return insertReturningId(
     `INSERT INTO ambulatori (nome, logo_path, color_primary, color_secondary, color_accent)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id`,
+     VALUES (?, ?, ?, ?, ?)`,
     [nome, logoPath, colorPrimary, colorSecondary, colorAccent]
   );
 }
@@ -64,35 +63,35 @@ export async function updateAmbulatorio(
 
   if (nome !== undefined) {
     values.push(nome);
-    fields.push(`nome = $${values.length}`);
+    fields.push('nome = ?');
   }
   if (logoPath !== undefined) {
     values.push(logoPath);
-    fields.push(`logo_path = $${values.length}`);
+    fields.push('logo_path = ?');
   }
   if (colorPrimary !== undefined) {
     values.push(colorPrimary);
-    fields.push(`color_primary = $${values.length}`);
+    fields.push('color_primary = ?');
   }
   if (colorSecondary !== undefined) {
     values.push(colorSecondary);
-    fields.push(`color_secondary = $${values.length}`);
+    fields.push('color_secondary = ?');
   }
   if (colorAccent !== undefined) {
     values.push(colorAccent);
-    fields.push(`color_accent = $${values.length}`);
+    fields.push('color_accent = ?');
   }
   if (indirizzo !== undefined) {
     values.push(indirizzo);
-    fields.push(`indirizzo = $${values.length}`);
+    fields.push('indirizzo = ?');
   }
   if (telefono !== undefined) {
     values.push(telefono);
-    fields.push(`telefono = $${values.length}`);
+    fields.push('telefono = ?');
   }
   if (email !== undefined) {
     values.push(email);
-    fields.push(`email = $${values.length}`);
+    fields.push('email = ?');
   }
 
   if (fields.length === 0) {
@@ -103,14 +102,14 @@ export async function updateAmbulatorio(
   values.push(normalizeIntegerForWrite(id));
 
   await db.execute(
-    `UPDATE ambulatori SET ${fields.join(', ')} WHERE id = CAST($${values.length} AS INTEGER)`,
+    `UPDATE ambulatori SET ${fields.join(', ')} WHERE id = ?`,
     values
   );
 }
 
 export async function deleteAmbulatorio(id: number): Promise<void> {
   const db = await initDatabase();
-  await db.execute('DELETE FROM ambulatori WHERE id = CAST($1 AS INTEGER)', [
+  await db.execute('DELETE FROM ambulatori WHERE id = ?', [
     normalizeIntegerForWrite(id)
   ]);
 }

@@ -105,15 +105,14 @@ La connessione e' centralizzata in:
 - `src/lib/db/config.ts`
 - `src/lib/db/client.ts`
 
-`config.ts` contiene gli URL di connessione.
+`config.ts` contiene il path di connessione SQLite.
 
 `client.ts` si occupa di:
 
-- aprire la connessione al PostgreSQL via `@tauri-apps/plugin-sql`
+- aprire la connessione a SQLite via `@tauri-apps/plugin-sql`
 - riusare una singola connessione in memoria
-- costruire messaggi di errore leggibili
-- tentare il bootstrap automatico del ruolo `gmd` e del database `gmd_platform` sulle installazioni locali standard
-- fornire `insertReturningId(...)` per gli `INSERT ... RETURNING id`
+- normalizzare i parametri prima delle query
+- fornire `insertReturningId(...)` usando `lastInsertId` di SQLite
 
 ### Moduli dati separati per dominio
 
@@ -148,9 +147,9 @@ L'obiettivo e' mantenere la UI coerente con la forma dei dati restituiti dal dat
 
 ### Motore
 
-Il database attuale e' `PostgreSQL` locale.
+Il database runtime e' `SQLite`.
 
-Il frontend non usa un ORM: le query sono scritte a mano in SQL, con placeholder PostgreSQL (`$1`, `$2`, ecc.).
+Il frontend non usa un ORM: le query sono scritte a mano in SQL, con placeholder `?`.
 
 ### Migration
 
@@ -158,33 +157,16 @@ Le migration strutturali sono in:
 
 - `src/lib/db/migrations.ts`
 
-Qui viene creata una baseline PostgreSQL con:
+Qui viene garantito lo schema SQLite finale con:
 
 - `users`
 - `ambulatori`
 - `pazienti`
 - `visite`
 - `fattori_rischio_cv`
-- `schema_migrations`
-- `data_imports`
+- aggiunta automatica delle colonne mancanti sulle installazioni piu' vecchie
 
-`schema_migrations` tiene traccia delle versioni dello schema.
-
-`data_imports` serve a sapere se l'import automatico dei dati legacy e' gia' stato eseguito.
-
-### Import dei dati legacy
-
-La migrazione dal vecchio database SQLite e' gestita da:
-
-- `src/lib/db/legacy-import.ts`
-- `scripts/migrate-sqlite-to-postgres.mjs`
-
-Ci sono due strategie:
-
-- import automatico all'avvio, se il PostgreSQL e' ancora vuoto o contiene solo i dati demo
-- import manuale one-shot via script
-
-Questo permette di recuperare i dati storici senza mantenere SQLite come database runtime principale.
+L'app usa direttamente lo stesso file SQLite storico, quindi non serve piu' una fase di import da un database separato.
 
 ## Runtime desktop: Tauri
 
@@ -367,17 +349,11 @@ Gli script principali sono in `package.json`:
   - build SvelteKit
 - `npm run tauri`
   - avvio CLI Tauri
-- `npm run db:up`
-  - avvio PostgreSQL in Docker
-- `npm run db:migrate:sqlite-to-pg`
-  - import manuale da SQLite
-
 In sviluppo reale, il flusso tipico e':
 
-1. avvio PostgreSQL
-2. `npm run tauri dev` oppure `npm run tauri`
-3. il frontend viene servito da Vite
-4. Tauri apre la finestra desktop che carica la UI
+1. `npm run tauri dev` oppure `npm run tauri`
+2. il frontend viene servito da Vite
+3. Tauri apre la finestra desktop che carica la UI e il database SQLite
 
 ## Dove intervenire in base al tipo di modifica
 

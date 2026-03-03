@@ -4,7 +4,6 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { readFile, writeFile } from '@tauri-apps/plugin-fs';
 import { resolveResource } from '@tauri-apps/api/path';
 import { rischioCVOptions } from '$lib/configs/clinical-options';
-import type { E2ECollector } from '$lib/testing/e2e-types';
 import type {
   EsamiEmaticiValues,
   FirmeVisita,
@@ -71,12 +70,6 @@ export type GenerateVisitaRefertoInput = {
 export type GenerateVisitaRefertoResult = {
   saved: boolean;
   path?: string;
-};
-
-export type GenerateVisitaRefertoOptions = {
-  saveMode?: 'dialog' | 'fixed-path';
-  fixedPath?: string;
-  collector?: E2ECollector;
 };
 
 const esamiTemplateOrder: Array<{
@@ -513,18 +506,7 @@ function ensureDocxExtension(filePath: string): string {
   return filePath.toLowerCase().endsWith('.docx') ? filePath : `${filePath}.docx`;
 }
 
-async function resolveOutputPath(
-  input: GenerateVisitaRefertoInput,
-  options?: GenerateVisitaRefertoOptions
-): Promise<string | null> {
-  if (options?.saveMode === 'fixed-path') {
-    if (!options.fixedPath?.trim()) {
-      throw new Error('Percorso fisso referto mancante in modalita test.');
-    }
-
-    return ensureDocxExtension(options.fixedPath.trim());
-  }
-
+async function resolveOutputPath(input: GenerateVisitaRefertoInput): Promise<string | null> {
   const filePath = await save({
     defaultPath: buildSuggestedFileName(input),
     filters: [
@@ -543,31 +525,20 @@ async function resolveOutputPath(
 }
 
 export async function generateVisitaReferto(
-  input: GenerateVisitaRefertoInput,
-  options?: GenerateVisitaRefertoOptions
+  input: GenerateVisitaRefertoInput
 ): Promise<GenerateVisitaRefertoResult> {
-  const collector = options?.collector;
+  const template = await loadTemplate();
+  const content = renderTemplate(template, buildReportData(input));
+  const resolvedPath = await resolveOutputPath(input);
 
-  try {
-    const template = await loadTemplate();
-    const content = renderTemplate(template, buildReportData(input));
-    const resolvedPath = await resolveOutputPath(input, options);
-
-    if (!resolvedPath) {
-      return { saved: false };
-    }
-
-    await writeFile(resolvedPath, content, { create: true });
-
-    return {
-      saved: true,
-      path: resolvedPath
-    };
-  } catch (error) {
-    collector?.recordError('report', 'report', getErrorMessage(error), {
-      fatal: true,
-      stack: error instanceof Error ? error.stack : undefined
-    });
-    throw error;
+  if (!resolvedPath) {
+    return { saved: false };
   }
+
+  await writeFile(resolvedPath, content, { create: true });
+
+  return {
+    saved: true,
+    path: resolvedPath
+  };
 }

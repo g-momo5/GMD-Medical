@@ -209,6 +209,6 @@ La versione originale da cui deriva questa specifica si basa su:
 
 - vista HTML: `index.html` (`statisticsView` e `statisticsContent`)
 - logica frontend: `renderer.js` (`showStatisticsView`, `loadStatistics`, `displayStatistics`, `renderPostgresStatistics`)
-- fonte dati: `preload.js` (`getStatistics`) e `main-postgres.js` (`handleGetStatistics`)
+- fonte dati: `preload.js` (`getStatistics`) e `main.js` (`handleGetStatistics`)
 
 Questi riferimenti servono solo per capire la funzione della pagina, non per copiarne il tema.

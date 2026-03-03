@@ -67,7 +67,9 @@
   },
   "plugins": {
     "sql": {
-      "preload": []
+      "preload": [
+        "sqlite:gmd.db"
+      ]
     }
   }
 }

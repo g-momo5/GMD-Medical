@@ -26,7 +26,6 @@
   import Conclusioni from '$lib/components/visit-blocks/Conclusioni.svelte';
   import FirmeVisita from '$lib/components/visit-blocks/FirmeVisita.svelte';
   import { isBlockVisibleForAmbulatorio } from '$lib/configs/visit-blocks-config';
-  import { getE2EConfig } from '$lib/testing/e2e-config';
   import {
     createEmptyEsamiEmatici,
     createEmptyFHAssessment,
@@ -52,9 +51,6 @@
   $: ambulatorioId = parseInt($page.params.id || '0');
   $: cameFromDashboard = $page.url.searchParams.get('from') === 'dashboard';
   $: preselectedPazienteId = parseInt($page.url.searchParams.get('pazienteId') || '0');
-  $: e2eConfig = getE2EConfig($page.url.searchParams);
-  $: e2eReportPath =
-    $page.url.searchParams.get('reportPath')?.trim() || e2eConfig.fixedReportPath;
 
   type PatientLookupField = 'nome' | 'cognome' | 'codice_fiscale';
   type PatientLookupState = Record<PatientLookupField, string>;
@@ -558,10 +554,7 @@
             pianificazioneFollowUp,
             firmeVisita,
             visitaId
-          }, e2eConfig.enabled ? {
-            saveMode: 'fixed-path',
-            fixedPath: e2eReportPath
-          } : undefined);
+          });
 
           if (reportResult.saved) {
             toastStore.show('success', 'Visita e referto DOCX salvati con successo!');

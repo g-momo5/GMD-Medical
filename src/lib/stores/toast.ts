@@ -1,6 +1,5 @@
 // GMD Medical Platform - Toast Notifications Store
 import { writable } from 'svelte/store';
-import { getActiveE2ECollector } from '$lib/testing/e2e-collector';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 
@@ -20,7 +19,6 @@ function createToastStore() {
     const toast: Toast = { id, type, message, duration, dismissing: false };
 
     update(toasts => [...toasts, toast]);
-    getActiveE2ECollector()?.recordToast(type, message);
 
     if (duration > 0) {
       setTimeout(() => {

@@ -21,8 +21,37 @@ export interface Ambulatorio {
   indirizzo?: string;
   telefono?: string;
   email?: string;
+  durata_minima_visita_minuti?: number;
+  durata_standard_visita_minuti?: number;
   created_at: string;
   updated_at: string;
+}
+
+export type GiornoSettimana = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+export interface AmbulatorioOperatingWindow {
+  id: number;
+  ambulatorio_id: number;
+  weekday: GiornoSettimana;
+  ora_inizio: string;
+  ora_fine: string;
+  max_pazienti_giorno: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertAmbulatorioOperatingWindowInput {
+  weekday: GiornoSettimana;
+  ora_inizio: string;
+  ora_fine: string;
+  max_pazienti_giorno: number;
+}
+
+export interface AmbulatorioOperatingSettings {
+  ambulatorioId: number;
+  durataMinimaVisitaMinuti: number;
+  durataStandardVisitaMinuti: number;
+  windows: AmbulatorioOperatingWindow[];
 }
 
 export interface Paziente {
@@ -267,6 +296,7 @@ export interface Appuntamento {
   ambulatorio_id: number;
   paziente_id: number;
   data_ora_inizio: string;
+  data_ora_fine: string;
   durata_minuti: number;
   motivo?: string | null;
   origine: OrigineAppuntamento;
@@ -277,13 +307,14 @@ export interface Appuntamento {
   paziente_nome?: string;
   paziente_cognome?: string;
   paziente_codice_fiscale?: string;
+  paziente_data_nascita?: string;
 }
 
 export interface CreateAppuntamentoManualeInput {
   ambulatorio_id: number;
   paziente_id: number;
   data_ora_inizio: string;
-  durata_minuti?: number;
+  data_ora_fine: string;
   motivo?: string;
 }
 
@@ -291,14 +322,45 @@ export interface UpdateAppuntamentoInput {
   id: number;
   paziente_id?: number;
   data_ora_inizio?: string;
-  durata_minuti?: number;
+  data_ora_fine?: string;
   motivo?: string;
+}
+
+export type AppuntamentoAdjustmentType = 'trim_previous_end' | 'trim_new_end' | 'trim_next_start';
+
+export interface AppuntamentoAdjustment {
+  type: AppuntamentoAdjustmentType;
+  appuntamentoId: number;
+  oldEnd: string;
+  newEnd: string;
+  pazienteNome?: string;
+}
+
+export interface AppuntamentoWriteRequirements {
+  requiresOutsideHoursConfirmation: boolean;
+  requiresOverlapAdjustmentConfirmation: boolean;
+  outsideHoursMessage?: string;
+  overlapAdjustments: AppuntamentoAdjustment[];
+}
+
+export interface AppuntamentoWriteOptions {
+  confirmOutsideHours?: boolean;
+  confirmOverlapAdjustments?: boolean;
+}
+
+export interface AppuntamentoWriteOutcome {
+  saved: boolean;
+  appuntamentoId?: number;
+  requirements?: AppuntamentoWriteRequirements;
+  appliedAdjustments?: AppuntamentoAdjustment[];
 }
 
 export interface AppuntamentoSlotDisponibilita {
   date: string;
   time: string;
   dateTime: string;
+  endDateTime: string;
+  insideWorkingHours: boolean;
   available: boolean;
   appuntamento: Appuntamento | null;
 }
@@ -307,6 +369,27 @@ export interface SlotAvailabilityCheck {
   available: boolean;
   conflict: Appuntamento | null;
   suggestedTimes: string[];
+}
+
+export type FirstSlotSearchMode = 'urgent' | 'quarter_hour';
+
+export interface FindFirstSlotParams {
+  ambulatorioId: number;
+  fromDateTime?: string;
+  horizonDays?: number;
+}
+
+export interface FirstSlotSearchResult {
+  found: boolean;
+  startDateTime: string | null;
+  endDateTime: string | null;
+  requiresAdjustmentHint: boolean;
+  reasonIfNotFound?: string;
+}
+
+export interface DailyAppointmentCount {
+  date: string;
+  total: number;
 }
 
 export interface FattoriRischioCV {

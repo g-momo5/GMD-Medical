@@ -88,7 +88,7 @@
   }
 
   async function handleVisitSubmit(event: CustomEvent) {
-    const { visita, fattoriRischioCV } = event.detail;
+    const { visita, fattoriRischioCV, followUpWriteOptions } = event.detail;
 
     try {
       if (visita.id) {
@@ -98,14 +98,16 @@
           fattoriRischioCV: {
             ...fattoriRischioCV,
             visita_id: fattoriRischioCV.visita_id || visita.id
-          }
+          },
+          followUpWriteOptions
         });
         toastStore.show('success', 'Visita modificata con successo!');
       } else {
         // Crea nuova visita
         await createVisitaCompleta({
           visita,
-          fattoriRischioCV
+          fattoriRischioCV,
+          followUpWriteOptions
         });
         toastStore.show('success', 'Visita creata con successo!');
       }

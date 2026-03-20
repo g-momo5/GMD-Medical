@@ -1,16 +1,32 @@
-import { insertReturningId } from './client';
+import {
+  getAmbulatorioOperatingSettingsById,
+  getAmbulatorioOperatingWindowsById
+} from './ambulatori';
 import { initDatabase } from './schema';
 import type {
+  AmbulatorioOperatingSettings,
   Appuntamento,
+  AppuntamentoAdjustment,
   AppuntamentoSlotDisponibilita,
-  CreateAppuntamentoManualeInput,
+  AppuntamentoWriteOptions,
+  AppuntamentoWriteOutcome,
+  AppuntamentoWriteRequirements,
+  FindFirstSlotParams,
+  FirstSlotSearchResult,
+  DailyAppointmentCount,
   SlotAvailabilityCheck,
+  CreateAppuntamentoManualeInput,
   UpdateAppuntamentoInput
 } from './types';
 
-const SLOT_DURATION_MINUTES = 30;
-const SLOT_START_HOUR = 8;
-const SLOT_END_HOUR = 20;
+const DEFAULT_APPOINTMENT_DURATION_MINUTES = 15;
+const DEFAULT_SLOT_START_HOUR = 8;
+const DEFAULT_SLOT_END_HOUR = 20;
+const FIRST_SLOT_SEARCH_HORIZON_DAYS = 180;
+const URGENT_SLOT_STEP_MINUTES = 5;
+const QUARTER_HOUR_STEP_MINUTES = 15;
+const MIN_ALLOWED_VISIT_DURATION_MINUTES = 10;
+export const APPOINTAMENTO_CONFIRMATION_REQUIRED_PREFIX = 'APPUNTAMENTO_CONFIRMATION_REQUIRED:';
 
 function normalizeIntegerForWrite(value: number | string | null | undefined): number | null {
   if (value === null || value === undefined) {
@@ -84,6 +100,29 @@ function normalizeDateTime(value: string): string {
   return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}`;
 }
 
+function normalizeTime(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(\d{2}):(\d{2})$/);
+  if (!match) {
+    throw new Error(`Orario non valido: ${value}`);
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (
+    Number.isNaN(hours) ||
+    Number.isNaN(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    throw new Error(`Orario non valido: ${value}`);
+  }
+
+  return `${match[1]}:${match[2]}`;
+}
+
 function formatDateTime(date: Date): string {
   const yyyy = String(date.getFullYear());
   const mm = String(date.getMonth() + 1).padStart(2, '0');
@@ -118,78 +157,249 @@ function getDayBounds(day: string): { start: string; endExclusive: string } {
   };
 }
 
-function normalizeDurationForWrite(value: number | undefined): number {
-  const duration = value ?? SLOT_DURATION_MINUTES;
-  if (!Number.isInteger(duration) || duration <= 0) {
-    throw new Error(`Durata appuntamento non valida: ${value}`);
-  }
-
-  if (duration !== SLOT_DURATION_MINUTES) {
-    throw new Error(`Durata appuntamento non supportata: ${duration} minuti`);
-  }
-
-  return duration;
+function getDurationMinutes(startDateTime: string, endDateTime: string): number {
+  const start = new Date(normalizeDateTime(startDateTime));
+  const end = new Date(normalizeDateTime(endDateTime));
+  return Math.round((end.getTime() - start.getTime()) / 60000);
 }
 
-function isSlotInsideWorkingHours(dateTime: string): boolean {
+function toIsoWeekday(dateTime: string): number {
+  const date = new Date(normalizeDateTime(dateTime));
+  const day = date.getDay();
+  return day === 0 ? 7 : day;
+}
+
+function ensureSameDate(startDateTime: string, endDateTime: string): void {
+  if (startDateTime.slice(0, 10) !== endDateTime.slice(0, 10)) {
+    throw new Error('Gli appuntamenti devono iniziare e finire nello stesso giorno');
+  }
+}
+
+function compareTimes(left: string, right: string): number {
+  return left.localeCompare(right);
+}
+
+function timeToMinutes(timeValue: string): number {
+  const normalized = normalizeTime(timeValue);
+  const [hours, minutes] = normalized.split(':');
+  return Number(hours) * 60 + Number(minutes);
+}
+
+function minutesToTime(totalMinutes: number): string {
+  const hours = String(Math.floor(totalMinutes / 60)).padStart(2, '0');
+  const minutes = String(totalMinutes % 60).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+function formatDateTimeLabel(value: string): string {
+  const normalized = normalizeDateTime(value);
+  return `${normalized.slice(0, 10)} ${normalized.slice(11, 16)}`;
+}
+
+function normalizeMinVisitDuration(value: number): number {
+  if (!Number.isInteger(value) || value < MIN_ALLOWED_VISIT_DURATION_MINUTES) {
+    throw new Error(
+      `Durata minima visita non valida: ${value}. Minimo consentito ${MIN_ALLOWED_VISIT_DURATION_MINUTES} minuti.`
+    );
+  }
+
+  return value;
+}
+
+function normalizeStandardVisitDuration(value: number, minDurationMinutes: number): number {
+  if (!Number.isInteger(value) || value < MIN_ALLOWED_VISIT_DURATION_MINUTES) {
+    return Math.max(DEFAULT_APPOINTMENT_DURATION_MINUTES, minDurationMinutes);
+  }
+
+  return Math.max(value, minDurationMinutes);
+}
+
+function getGlobalStartBoundaryMinutes(): number {
+  return DEFAULT_SLOT_START_HOUR * 60;
+}
+
+function getGlobalEndBoundaryMinutes(): number {
+  return DEFAULT_SLOT_END_HOUR * 60;
+}
+
+function roundUpDateTimeToStep(dateTime: string, stepMinutes: number): string {
   const normalized = normalizeDateTime(dateTime);
-  const hour = Number(normalized.slice(11, 13));
-  const minute = Number(normalized.slice(14, 16));
+  const date = new Date(normalized);
+  const currentMinutes = date.getMinutes();
+  const remainder = currentMinutes % stepMinutes;
 
-  if (minute % SLOT_DURATION_MINUTES !== 0) {
-    return false;
+  if (remainder !== 0) {
+    date.setMinutes(currentMinutes + (stepMinutes - remainder));
   }
 
-  if (hour < SLOT_START_HOUR) {
-    return false;
-  }
-
-  if (hour > SLOT_END_HOUR) {
-    return false;
-  }
-
-  if (hour === SLOT_END_HOUR && minute > 0) {
-    return false;
-  }
-
-  if (hour === SLOT_END_HOUR && minute === 0) {
-    return false;
-  }
-
-  return true;
+  date.setSeconds(0, 0);
+  return formatDateTime(date);
 }
 
-function buildSlotsForDay(day: string): Array<{ time: string; dateTime: string }> {
-  const normalizedDay = normalizeDateOnly(day);
-  const slots: Array<{ time: string; dateTime: string }> = [];
-  const current = new Date(`${normalizedDay}T00:00`);
-  current.setHours(SLOT_START_HOUR, 0, 0, 0);
-  const end = new Date(`${normalizedDay}T00:00`);
-  end.setHours(SLOT_END_HOUR, 0, 0, 0);
+function getDefaultSearchStartDateTime(fromDateTime?: string): string {
+  if (typeof fromDateTime === 'string' && fromDateTime.trim()) {
+    return normalizeDateTime(fromDateTime);
+  }
 
-  while (current < end) {
-    const hh = String(current.getHours()).padStart(2, '0');
-    const mm = String(current.getMinutes()).padStart(2, '0');
-    const time = `${hh}:${mm}`;
-    slots.push({
-      time,
-      dateTime: `${normalizedDay}T${time}`
+  return formatDateTime(new Date());
+}
+
+function getSearchHorizonDays(horizonDays?: number): number {
+  if (!Number.isInteger(horizonDays) || (horizonDays ?? 0) <= 0) {
+    return FIRST_SLOT_SEARCH_HORIZON_DAYS;
+  }
+
+  return Math.max(1, Math.floor(horizonDays as number));
+}
+
+function getDayWindowsWithinGlobalBounds(params: {
+  day: string;
+  weekday: number;
+  windows: Array<{ weekday: number; ora_inizio: string; ora_fine: string; max_pazienti_giorno?: number }>;
+}): Array<{ startDateTime: string; endDateTime: string }> {
+  const globalStartMinutes = getGlobalStartBoundaryMinutes();
+  const globalEndMinutes = getGlobalEndBoundaryMinutes();
+  const result: Array<{ startDateTime: string; endDateTime: string }> = [];
+
+  for (const window of params.windows) {
+    if (window.weekday !== params.weekday) {
+      continue;
+    }
+
+    const windowStartMinutes = timeToMinutes(window.ora_inizio);
+    const windowEndMinutes = timeToMinutes(window.ora_fine);
+    const boundedStartMinutes = Math.max(windowStartMinutes, globalStartMinutes);
+    const boundedEndMinutes = Math.min(windowEndMinutes, globalEndMinutes);
+    if (boundedStartMinutes >= boundedEndMinutes) {
+      continue;
+    }
+
+    result.push({
+      startDateTime: `${params.day}T${minutesToTime(boundedStartMinutes)}`,
+      endDateTime: `${params.day}T${minutesToTime(boundedEndMinutes)}`
     });
-    current.setMinutes(current.getMinutes() + SLOT_DURATION_MINUTES);
   }
 
-  return slots;
+  return result.sort((left, right) => left.startDateTime.localeCompare(right.startDateTime));
 }
 
-async function findConflictBySlot(params: {
+function getDailyCapacityLimitForWeekday(
+  windows: Array<{ weekday: number; max_pazienti_giorno?: number }>,
+  weekday: number
+): number | null {
+  const capacities = windows
+    .filter((window) => window.weekday === weekday)
+    .map((window) => Number(window.max_pazienti_giorno))
+    .filter((value) => Number.isInteger(value) && value >= 1)
+    .map((value) => Math.floor(value));
+
+  if (capacities.length === 0) {
+    return null;
+  }
+
+  return Math.max(...capacities);
+}
+
+function isRetryableFirstSlotCandidateError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes('durata appuntamento non valida') ||
+    message.includes('durata finale appuntamento non valida') ||
+    message.includes('conflitto orario') ||
+    message.includes("impossibile accorciare l'appuntamento precedente") ||
+    message.includes('impossibile accorciare il nuovo appuntamento') ||
+    message.includes('limite giornaliero raggiunto')
+  );
+}
+
+async function resolveAmbulatorioDurationSettings(
+  ambulatorioId: number,
+  preloadedSettings?: AmbulatorioOperatingSettings
+): Promise<{
+  settings: AmbulatorioOperatingSettings;
+  minDurationMinutes: number;
+  standardDurationMinutes: number;
+}> {
+  const settings = preloadedSettings ?? (await getAmbulatorioOperatingSettingsById(ambulatorioId));
+  const minDurationMinutes = normalizeMinVisitDuration(settings.durataMinimaVisitaMinuti);
+  const standardDurationMinutes = normalizeStandardVisitDuration(
+    settings.durataStandardVisitaMinuti,
+    minDurationMinutes
+  );
+
+  return {
+    settings,
+    minDurationMinutes,
+    standardDurationMinutes
+  };
+}
+
+function buildOutsideHoursMessage(
+  startDateTime: string,
+  endDateTime: string,
+  dayWindows: Array<{ ora_inizio: string; ora_fine: string }>
+): string {
+  const ranges = dayWindows
+    .map((window) => `${window.ora_inizio}-${window.ora_fine}`)
+    .join(', ');
+
+  if (!ranges) {
+    return `L'appuntamento ${formatDateTimeLabel(startDateTime)}-${endDateTime.slice(11, 16)} è fuori dai giorni/orari di funzionamento.`;
+  }
+
+  return `L'appuntamento ${formatDateTimeLabel(startDateTime)}-${endDateTime.slice(11, 16)} è fuori orario. Fasce disponibili per il giorno: ${ranges}.`;
+}
+
+function isIntervalInsideDayWindows(params: {
+  startDateTime: string;
+  endDateTime: string;
+  windows: Array<{ weekday: number; ora_inizio: string; ora_fine: string }>;
+}): {
+  inside: boolean;
+  dayWindows: Array<{ ora_inizio: string; ora_fine: string }>;
+} {
+  const startDateTime = normalizeDateTime(params.startDateTime);
+  const endDateTime = normalizeDateTime(params.endDateTime);
+  ensureSameDate(startDateTime, endDateTime);
+
+  const weekday = toIsoWeekday(startDateTime);
+  const dayWindows = params.windows
+    .filter((window) => window.weekday === weekday)
+    .map((window) => ({
+      ora_inizio: normalizeTime(window.ora_inizio),
+      ora_fine: normalizeTime(window.ora_fine)
+    }))
+    .sort((left, right) => compareTimes(left.ora_inizio, right.ora_inizio));
+
+  if (dayWindows.length === 0) {
+    return { inside: false, dayWindows };
+  }
+
+  const startTime = startDateTime.slice(11, 16);
+  const endTime = endDateTime.slice(11, 16);
+
+  const inside = dayWindows.some((window) => {
+    return compareTimes(startTime, window.ora_inizio) >= 0 && compareTimes(endTime, window.ora_fine) <= 0;
+  });
+
+  return { inside, dayWindows };
+}
+
+async function getOverlappingAppointments(params: {
   ambulatorioId: number;
-  dataOraInizio: string;
+  startDateTime: string;
+  endDateTime: string;
   excludeAppuntamentoId?: number;
-}): Promise<Appuntamento | null> {
+}): Promise<Appuntamento[]> {
   const db = await initDatabase();
   const queryParams: unknown[] = [
     normalizeIntegerForWrite(params.ambulatorioId),
-    normalizeDateTime(params.dataOraInizio)
+    normalizeDateTime(params.endDateTime),
+    normalizeDateTime(params.startDateTime)
   ];
 
   let sql = `
@@ -197,45 +407,369 @@ async function findConflictBySlot(params: {
       a.*,
       p.nome AS paziente_nome,
       p.cognome AS paziente_cognome,
-      p.codice_fiscale AS paziente_codice_fiscale
+      p.codice_fiscale AS paziente_codice_fiscale,
+      p.data_nascita AS paziente_data_nascita
     FROM appuntamenti a
     INNER JOIN pazienti p ON p.id = a.paziente_id
     WHERE a.ambulatorio_id = ?
-      AND a.data_ora_inizio = ?
+      AND a.data_ora_inizio < ?
+      AND a.data_ora_fine > ?
   `;
 
   if (params.excludeAppuntamentoId !== undefined) {
-    queryParams.push(normalizeIntegerForWrite(params.excludeAppuntamentoId));
     sql += ' AND a.id <> ?';
+    queryParams.push(normalizeIntegerForWrite(params.excludeAppuntamentoId));
   }
 
-  sql += ' LIMIT 1';
-  const rows = await db.select<Appuntamento[]>(sql, queryParams);
-  return rows[0] ?? null;
+  sql += ' ORDER BY a.data_ora_inizio ASC, a.data_ora_fine ASC';
+  return db.select<Appuntamento[]>(sql, queryParams);
 }
 
-function formatSlotConflictMessage(dateTime: string, suggestions: string[]): string {
-  const normalized = normalizeDateTime(dateTime);
-  const datePart = normalized.slice(0, 10);
-  const timePart = normalized.slice(11, 16);
-  const suggestionsText =
-    suggestions.length > 0 ? ` Slot liberi: ${suggestions.join(', ')}.` : '';
-  return `Lo slot ${datePart} ${timePart} non è disponibile.${suggestionsText}`;
-}
-
-async function throwIfSlotNotAvailable(params: {
+async function getDailyAppointmentCount(params: {
   ambulatorioId: number;
-  dataOraInizio: string;
+  day: string;
   excludeAppuntamentoId?: number;
-}): Promise<void> {
-  const check = await checkAppuntamentoSlotAvailability({
-    ambulatorioId: params.ambulatorioId,
-    dataOraInizio: params.dataOraInizio,
-    excludeAppuntamentoId: params.excludeAppuntamentoId
+}): Promise<number> {
+  const db = await initDatabase();
+  const bounds = getDayBounds(params.day);
+  const queryParams: unknown[] = [
+    normalizeIntegerForWrite(params.ambulatorioId),
+    normalizeDateTime(bounds.endExclusive),
+    normalizeDateTime(bounds.start)
+  ];
+
+  let sql = `
+    SELECT COUNT(*) AS total
+    FROM appuntamenti
+    WHERE ambulatorio_id = ?
+      AND data_ora_inizio < ?
+      AND data_ora_fine > ?
+  `;
+
+  if (params.excludeAppuntamentoId !== undefined) {
+    sql += ' AND id <> ?';
+    queryParams.push(normalizeIntegerForWrite(params.excludeAppuntamentoId));
+  }
+
+  const rows = await db.select<Array<{ total: number | string }>>(sql, queryParams);
+  return Number(rows[0]?.total ?? 0);
+}
+
+async function buildWritePlan(params: {
+  ambulatorioId: number;
+  appointmentIdForUpdate?: number;
+  startDateTime: string;
+  endDateTime: string;
+  settings?: AmbulatorioOperatingSettings;
+  options?: AppuntamentoWriteOptions;
+}): Promise<{
+  finalStartDateTime: string;
+  finalEndDateTime: string;
+  finalDurationMinutes: number;
+  adjustments: AppuntamentoAdjustment[];
+  updatesToApply: Array<{ id: number; startDateTime: string; endDateTime: string; durationMinutes: number }>;
+  requiresOutsideHoursConfirmation: boolean;
+  outsideHoursMessage?: string;
+  requiresOverlapAdjustmentConfirmation: boolean;
+}> {
+  const startDateTime = normalizeDateTime(params.startDateTime);
+  const requestedEndDateTime = normalizeDateTime(params.endDateTime);
+
+  ensureSameDate(startDateTime, requestedEndDateTime);
+
+  const durationSettings = await resolveAmbulatorioDurationSettings(params.ambulatorioId, params.settings);
+  const settings = durationSettings.settings;
+  const minDurationMinutes = durationSettings.minDurationMinutes;
+  const dailyCapacityLimit = getDailyCapacityLimitForWeekday(settings.windows, toIsoWeekday(startDateTime));
+  if (dailyCapacityLimit !== null) {
+    const currentCount = await getDailyAppointmentCount({
+      ambulatorioId: params.ambulatorioId,
+      day: startDateTime.slice(0, 10),
+      excludeAppuntamentoId: params.appointmentIdForUpdate
+    });
+    if (currentCount >= dailyCapacityLimit) {
+      throw new Error(
+        `Limite giornaliero raggiunto per ${startDateTime.slice(0, 10)}: massimo ${dailyCapacityLimit} pazienti.`
+      );
+    }
+  }
+
+  const requestedDuration = getDurationMinutes(startDateTime, requestedEndDateTime);
+  if (requestedDuration < minDurationMinutes) {
+    throw new Error(
+      `Durata appuntamento non valida: minimo ${minDurationMinutes} minuti per questo ambulatorio.`
+    );
+  }
+
+  const insideResult = isIntervalInsideDayWindows({
+    startDateTime,
+    endDateTime: requestedEndDateTime,
+    windows: settings.windows
   });
 
-  if (!check.available) {
-    throw new Error(formatSlotConflictMessage(params.dataOraInizio, check.suggestedTimes));
+  const overlappingAppointments = await getOverlappingAppointments({
+    ambulatorioId: params.ambulatorioId,
+    startDateTime,
+    endDateTime: requestedEndDateTime,
+    excludeAppuntamentoId: params.appointmentIdForUpdate
+  });
+
+  const previousOverlaps = overlappingAppointments.filter(
+    (appointment) => normalizeDateTime(appointment.data_ora_inizio) < startDateTime
+  );
+  const nextOverlaps = overlappingAppointments.filter(
+    (appointment) => normalizeDateTime(appointment.data_ora_inizio) >= startDateTime
+  );
+
+  const updatesToApply: Array<{ id: number; startDateTime: string; endDateTime: string; durationMinutes: number }> = [];
+  const adjustments: AppuntamentoAdjustment[] = [];
+
+  for (const appointment of previousOverlaps) {
+    const currentStart = normalizeDateTime(appointment.data_ora_inizio);
+    const currentEnd = normalizeDateTime(appointment.data_ora_fine);
+    if (currentEnd <= startDateTime) {
+      continue;
+    }
+
+    const nextDuration = getDurationMinutes(currentStart, startDateTime);
+    if (nextDuration < minDurationMinutes) {
+      const patientName = [appointment.paziente_cognome, appointment.paziente_nome]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      throw new Error(
+        `Impossibile accorciare l'appuntamento precedente${patientName ? ` (${patientName})` : ''}: durata minima ${minDurationMinutes} minuti.`
+      );
+    }
+
+    updatesToApply.push({
+      id: appointment.id,
+      startDateTime: currentStart,
+      endDateTime: startDateTime,
+      durationMinutes: nextDuration
+    });
+
+    adjustments.push({
+      type: 'trim_previous_end',
+      appuntamentoId: appointment.id,
+      oldEnd: currentEnd,
+      newEnd: startDateTime,
+      pazienteNome: [appointment.paziente_cognome, appointment.paziente_nome]
+        .filter(Boolean)
+        .join(' ')
+        .trim()
+    });
+  }
+
+  let finalEndDateTime = requestedEndDateTime;
+  if (nextOverlaps.length > 0) {
+    const earliestNext = nextOverlaps[0];
+    const earliestNextStart = normalizeDateTime(earliestNext.data_ora_inizio);
+    const earliestNextEnd = normalizeDateTime(earliestNext.data_ora_fine);
+    if (earliestNextStart < finalEndDateTime) {
+      const nextDuration = getDurationMinutes(startDateTime, earliestNextStart);
+      if (nextDuration < minDurationMinutes) {
+        const shiftedNextDuration = getDurationMinutes(finalEndDateTime, earliestNextEnd);
+        if (shiftedNextDuration >= minDurationMinutes) {
+          updatesToApply.push({
+            id: earliestNext.id,
+            startDateTime: finalEndDateTime,
+            endDateTime: earliestNextEnd,
+            durationMinutes: shiftedNextDuration
+          });
+
+          adjustments.push({
+            type: 'trim_next_start',
+            appuntamentoId: earliestNext.id,
+            oldEnd: earliestNextStart,
+            newEnd: finalEndDateTime,
+            pazienteNome: [earliestNext.paziente_cognome, earliestNext.paziente_nome]
+              .filter(Boolean)
+              .join(' ')
+              .trim()
+          });
+        } else {
+          const patientName = [earliestNext.paziente_cognome, earliestNext.paziente_nome]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+          const conflictRange = `${earliestNextStart.slice(11, 16)}-${earliestNextEnd.slice(11, 16)}`;
+          const requestedRange = `${startDateTime.slice(11, 16)}-${requestedEndDateTime.slice(11, 16)}`;
+          const minimumEndTime = addMinutes(startDateTime, minDurationMinutes).slice(11, 16);
+          throw new Error(
+            `Conflitto orario con appuntamento${patientName ? ` (${patientName})` : ''} ${conflictRange}. ` +
+              `L'intervallo richiesto ${requestedRange} non rispetta la durata minima (${minDurationMinutes} minuti) ` +
+              `perché andrebbe accorciato sotto soglia. Prova a usare un orario che termini entro ${minimumEndTime} ` +
+              `oppure sposta l'appuntamento in conflitto.`
+          );
+        }
+      } else {
+        finalEndDateTime = earliestNextStart;
+        adjustments.push({
+          type: 'trim_new_end',
+          appuntamentoId: earliestNext.id,
+          oldEnd: requestedEndDateTime,
+          newEnd: finalEndDateTime,
+          pazienteNome: [earliestNext.paziente_cognome, earliestNext.paziente_nome]
+            .filter(Boolean)
+            .join(' ')
+            .trim()
+        });
+      }
+    }
+  }
+
+  const finalDurationMinutes = getDurationMinutes(startDateTime, finalEndDateTime);
+  if (finalDurationMinutes < minDurationMinutes) {
+    throw new Error(
+      `Durata finale appuntamento non valida: minimo ${minDurationMinutes} minuti per questo ambulatorio.`
+    );
+  }
+
+  const requiresOutsideHoursConfirmation = !insideResult.inside;
+  const requiresOverlapAdjustmentConfirmation = adjustments.length > 0;
+  const options = params.options ?? {};
+
+  return {
+    finalStartDateTime: startDateTime,
+    finalEndDateTime,
+    finalDurationMinutes,
+    adjustments,
+    updatesToApply,
+    requiresOutsideHoursConfirmation:
+      requiresOutsideHoursConfirmation && !Boolean(options.confirmOutsideHours),
+    outsideHoursMessage: requiresOutsideHoursConfirmation
+      ? buildOutsideHoursMessage(startDateTime, finalEndDateTime, insideResult.dayWindows)
+      : undefined,
+    requiresOverlapAdjustmentConfirmation:
+      requiresOverlapAdjustmentConfirmation && !Boolean(options.confirmOverlapAdjustments)
+  };
+}
+
+function buildRequiresConfirmationOutcome(plan: {
+  requiresOutsideHoursConfirmation: boolean;
+  outsideHoursMessage?: string;
+  requiresOverlapAdjustmentConfirmation: boolean;
+  adjustments: AppuntamentoAdjustment[];
+}): AppuntamentoWriteOutcome {
+  return {
+    saved: false,
+    requirements: {
+      requiresOutsideHoursConfirmation: plan.requiresOutsideHoursConfirmation,
+      requiresOverlapAdjustmentConfirmation: plan.requiresOverlapAdjustmentConfirmation,
+      outsideHoursMessage: plan.outsideHoursMessage,
+      overlapAdjustments: plan.adjustments
+    }
+  };
+}
+
+export function buildConfirmationRequiredErrorMessage(
+  requirements: AppuntamentoWriteRequirements
+): string {
+  return `${APPOINTAMENTO_CONFIRMATION_REQUIRED_PREFIX}${JSON.stringify(requirements)}`;
+}
+
+export function parseConfirmationRequiredError(
+  error: unknown
+): AppuntamentoWriteRequirements | null {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (!message.startsWith(APPOINTAMENTO_CONFIRMATION_REQUIRED_PREFIX)) {
+    return null;
+  }
+
+  const rawPayload = message.slice(APPOINTAMENTO_CONFIRMATION_REQUIRED_PREFIX.length);
+  try {
+    return JSON.parse(rawPayload) as AppuntamentoWriteRequirements;
+  } catch {
+    return null;
+  }
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  return '';
+}
+
+function isNoActiveTransactionError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return message.includes('no transaction is active');
+}
+
+async function beginWriteTransactionIfSupported(
+  db: Awaited<ReturnType<typeof initDatabase>>
+): Promise<boolean> {
+  await db.execute('BEGIN');
+  return true;
+}
+
+async function commitWriteTransactionIfSupported(
+  db: Awaited<ReturnType<typeof initDatabase>>,
+  transactionStarted: boolean
+): Promise<void> {
+  if (!transactionStarted) {
+    return;
+  }
+
+  try {
+    await db.execute('COMMIT');
+  } catch (error) {
+    if (isNoActiveTransactionError(error)) {
+      return;
+    }
+
+    throw error;
+  }
+}
+
+async function rollbackWriteTransactionIfSupported(
+  db: Awaited<ReturnType<typeof initDatabase>>,
+  transactionStarted: boolean
+): Promise<void> {
+  if (!transactionStarted) {
+    return;
+  }
+
+  try {
+    await db.execute('ROLLBACK');
+  } catch (error) {
+    if (isNoActiveTransactionError(error)) {
+      return;
+    }
+  }
+}
+
+function getLastInsertId(result: { lastInsertId?: number | null }): number {
+  const insertedId = Number(result.lastInsertId);
+  if (!Number.isInteger(insertedId)) {
+    throw new Error("Impossibile ottenere l'ID appena creato dal database.");
+  }
+
+  return insertedId;
+}
+
+async function applyExistingAppointmentAdjustments(params: {
+  db: Awaited<ReturnType<typeof initDatabase>>;
+  updates: Array<{ id: number; startDateTime: string; endDateTime: string; durationMinutes: number }>;
+}): Promise<void> {
+  for (const update of params.updates) {
+    await params.db.execute(
+      `UPDATE appuntamenti
+       SET data_ora_inizio = ?, data_ora_fine = ?, durata_minuti = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [
+        normalizeDateTime(update.startDateTime),
+        normalizeDateTime(update.endDateTime),
+        normalizeIntegerForWrite(update.durationMinutes),
+        normalizeIntegerForWrite(update.id)
+      ]
+    );
   }
 }
 
@@ -246,7 +780,8 @@ export async function getAppuntamentoById(id: number): Promise<Appuntamento | nu
       a.*,
       p.nome AS paziente_nome,
       p.cognome AS paziente_cognome,
-      p.codice_fiscale AS paziente_codice_fiscale
+      p.codice_fiscale AS paziente_codice_fiscale,
+      p.data_nascita AS paziente_data_nascita
     FROM appuntamenti a
     INNER JOIN pazienti p ON p.id = a.paziente_id
     WHERE a.id = ?`,
@@ -263,7 +798,8 @@ export async function getAppuntamentoBySourceVisitaId(visitaId: number): Promise
       a.*,
       p.nome AS paziente_nome,
       p.cognome AS paziente_cognome,
-      p.codice_fiscale AS paziente_codice_fiscale
+      p.codice_fiscale AS paziente_codice_fiscale,
+      p.data_nascita AS paziente_data_nascita
     FROM appuntamenti a
     INNER JOIN pazienti p ON p.id = a.paziente_id
     WHERE a.source_visita_id = ?
@@ -286,17 +822,43 @@ export async function getAppuntamentiByRange(params: {
       a.*,
       p.nome AS paziente_nome,
       p.cognome AS paziente_cognome,
-      p.codice_fiscale AS paziente_codice_fiscale
+      p.codice_fiscale AS paziente_codice_fiscale,
+      p.data_nascita AS paziente_data_nascita
     FROM appuntamenti a
     INNER JOIN pazienti p ON p.id = a.paziente_id
     WHERE a.ambulatorio_id = ?
-      AND a.data_ora_inizio >= ?
       AND a.data_ora_inizio < ?
+      AND a.data_ora_fine > ?
     ORDER BY a.data_ora_inizio ASC`,
     [
       normalizeIntegerForWrite(params.ambulatorioId),
-      normalizeDateTime(params.rangeStart),
-      normalizeDateTime(params.rangeEndExclusive)
+      normalizeDateTime(params.rangeEndExclusive),
+      normalizeDateTime(params.rangeStart)
+    ]
+  );
+}
+
+export async function getDailyAppointmentCountsByRange(params: {
+  ambulatorioId: number;
+  rangeStart: string;
+  rangeEndExclusive: string;
+}): Promise<DailyAppointmentCount[]> {
+  const db = await initDatabase();
+
+  return db.select<DailyAppointmentCount[]>(
+    `SELECT
+       substr(data_ora_inizio, 1, 10) AS date,
+       COUNT(*) AS total
+     FROM appuntamenti
+     WHERE ambulatorio_id = ?
+       AND data_ora_inizio < ?
+       AND data_ora_fine > ?
+     GROUP BY substr(data_ora_inizio, 1, 10)
+     ORDER BY date ASC`,
+    [
+      normalizeIntegerForWrite(params.ambulatorioId),
+      normalizeDateTime(params.rangeEndExclusive),
+      normalizeDateTime(params.rangeStart)
     ]
   );
 }
@@ -318,64 +880,103 @@ export async function getSlotDisponibilitaByDay(params: {
   day: string;
   excludeAppuntamentoId?: number;
 }): Promise<AppuntamentoSlotDisponibilita[]> {
-  const normalizedDay = normalizeDateOnly(params.day);
+  const day = normalizeDateOnly(params.day);
+  const settings = await getAmbulatorioOperatingSettingsById(params.ambulatorioId);
+  const stepMinutes = normalizeMinVisitDuration(settings.durataMinimaVisitaMinuti);
   const appointments = await getAppuntamentiByDay({
     ambulatorioId: params.ambulatorioId,
-    day: normalizedDay
+    day
   });
 
-  const occupiedByDateTime = new Map<string, Appuntamento>();
-  for (const appointment of appointments) {
-    if (
-      params.excludeAppuntamentoId !== undefined &&
-      appointment.id === params.excludeAppuntamentoId
-    ) {
-      continue;
-    }
+  const targetWeekday = toIsoWeekday(`${day}T00:00`);
+  const dayWindows = settings.windows
+    .filter((window) => window.weekday === targetWeekday)
+    .sort((left, right) => compareTimes(left.ora_inizio, right.ora_inizio));
+  const dailyCapacityLimit = getDailyCapacityLimitForWeekday(settings.windows, targetWeekday);
 
-    occupiedByDateTime.set(normalizeDateTime(appointment.data_ora_inizio), appointment);
+  if (dayWindows.length === 0) {
+    return [];
   }
 
-  return buildSlotsForDay(normalizedDay).map((slot) => {
-    const occupiedAppointment = occupiedByDateTime.get(slot.dateTime) ?? null;
-    return {
-      date: normalizedDay,
-      time: slot.time,
-      dateTime: slot.dateTime,
-      available: occupiedAppointment === null,
-      appuntamento: occupiedAppointment
-    };
-  });
+  const filteredAppointments =
+    params.excludeAppuntamentoId !== undefined
+      ? appointments.filter((appointment) => appointment.id !== params.excludeAppuntamentoId)
+      : appointments;
+  const isDailyCapacityReached =
+    dailyCapacityLimit !== null && filteredAppointments.length >= dailyCapacityLimit;
+
+  const result: AppuntamentoSlotDisponibilita[] = [];
+
+  for (const window of dayWindows) {
+    const startMinutes = timeToMinutes(window.ora_inizio);
+    const endMinutes = timeToMinutes(window.ora_fine);
+
+    let current = startMinutes;
+    while (current + stepMinutes <= endMinutes) {
+      const time = minutesToTime(current);
+      const slotStart = `${day}T${time}`;
+      const slotEnd = addMinutes(slotStart, stepMinutes);
+      const occupiedAppointment =
+        filteredAppointments.find((appointment) => {
+          const appointmentStart = normalizeDateTime(appointment.data_ora_inizio);
+          const appointmentEnd = normalizeDateTime(appointment.data_ora_fine);
+          return appointmentStart < slotEnd && appointmentEnd > slotStart;
+        }) ?? null;
+
+      result.push({
+        date: day,
+        time,
+        dateTime: slotStart,
+        endDateTime: slotEnd,
+        insideWorkingHours: true,
+        available: !isDailyCapacityReached && occupiedAppointment === null,
+        appuntamento: occupiedAppointment
+      });
+
+      current += stepMinutes;
+    }
+  }
+
+  return result;
 }
 
 export async function checkAppuntamentoSlotAvailability(params: {
   ambulatorioId: number;
   dataOraInizio: string;
+  dataOraFine?: string;
   excludeAppuntamentoId?: number;
 }): Promise<SlotAvailabilityCheck> {
-  const normalizedDateTime = normalizeDateTime(params.dataOraInizio);
-  const day = normalizedDateTime.slice(0, 10);
-  const slotList = await getSlotDisponibilitaByDay({
+  const startDateTime = normalizeDateTime(params.dataOraInizio);
+  const durationSettings = await resolveAmbulatorioDurationSettings(params.ambulatorioId);
+  const endDateTime = params.dataOraFine
+    ? normalizeDateTime(params.dataOraFine)
+    : addMinutes(startDateTime, durationSettings.standardDurationMinutes);
+
+  const insideResult = isIntervalInsideDayWindows({
+    startDateTime,
+    endDateTime,
+    windows: durationSettings.settings.windows
+  });
+
+  const overlaps = await getOverlappingAppointments({
     ambulatorioId: params.ambulatorioId,
-    day,
+    startDateTime,
+    endDateTime,
     excludeAppuntamentoId: params.excludeAppuntamentoId
   });
 
-  const suggestions = slotList.filter((slot) => slot.available).map((slot) => slot.time);
-  const slot = slotList.find((entry) => entry.dateTime === normalizedDateTime);
+  const suggestions = (await getSlotDisponibilitaByDay({
+    ambulatorioId: params.ambulatorioId,
+    day: startDateTime.slice(0, 10),
+    excludeAppuntamentoId: params.excludeAppuntamentoId
+  }))
+    .filter((slot) => slot.available)
+    .map((slot) => slot.time);
 
-  if (!isSlotInsideWorkingHours(normalizedDateTime) || !slot) {
+  if (!insideResult.inside || overlaps.length > 0) {
     return {
       available: false,
-      conflict: null,
-      suggestedTimes: suggestions
-    };
-  }
-
-  if (!slot.available) {
-    return {
-      available: false,
-      conflict: slot.appuntamento,
+      conflict: overlaps[0] ?? null,
       suggestedTimes: suggestions
     };
   }
@@ -387,34 +988,111 @@ export async function checkAppuntamentoSlotAvailability(params: {
   };
 }
 
-export async function createAppuntamentoManuale(input: CreateAppuntamentoManualeInput): Promise<number> {
-  await throwIfSlotNotAvailable({
-    ambulatorioId: input.ambulatorio_id,
-    dataOraInizio: input.data_ora_inizio
+export async function previewAppuntamentoWrite(params: {
+  ambulatorioId: number;
+  dataOraInizio: string;
+  dataOraFine?: string;
+  appointmentIdForUpdate?: number;
+  options?: AppuntamentoWriteOptions;
+}): Promise<AppuntamentoWriteOutcome> {
+  const startDateTime = normalizeDateTime(params.dataOraInizio);
+  const durationSettings = await resolveAmbulatorioDurationSettings(params.ambulatorioId);
+  const endDateTime = params.dataOraFine
+    ? normalizeDateTime(params.dataOraFine)
+    : addMinutes(startDateTime, durationSettings.standardDurationMinutes);
+
+  const plan = await buildWritePlan({
+    ambulatorioId: params.ambulatorioId,
+    appointmentIdForUpdate: params.appointmentIdForUpdate,
+    startDateTime,
+    endDateTime,
+    settings: durationSettings.settings,
+    options: params.options
   });
 
-  await initDatabase();
-  return insertReturningId(
-    `INSERT INTO appuntamenti (
-      ambulatorio_id,
-      paziente_id,
-      data_ora_inizio,
-      durata_minuti,
-      motivo,
-      origine,
-      source_visita_id
-    ) VALUES (?, ?, ?, ?, ?, 'manuale', NULL)`,
-    [
-      normalizeIntegerForWrite(input.ambulatorio_id),
-      normalizeIntegerForWrite(input.paziente_id),
-      normalizeDateTime(input.data_ora_inizio),
-      normalizeDurationForWrite(input.durata_minuti),
-      normalizeTextForWrite(input.motivo)
-    ]
-  );
+  if (plan.requiresOutsideHoursConfirmation || plan.requiresOverlapAdjustmentConfirmation) {
+    return buildRequiresConfirmationOutcome({
+      requiresOutsideHoursConfirmation: plan.requiresOutsideHoursConfirmation,
+      outsideHoursMessage: plan.outsideHoursMessage,
+      requiresOverlapAdjustmentConfirmation: plan.requiresOverlapAdjustmentConfirmation,
+      adjustments: plan.adjustments
+    });
+  }
+
+  return {
+    saved: true,
+    appliedAdjustments: plan.adjustments
+  };
 }
 
-export async function updateAppuntamento(input: UpdateAppuntamentoInput): Promise<void> {
+export async function createAppuntamentoManuale(
+  input: CreateAppuntamentoManualeInput,
+  options?: AppuntamentoWriteOptions
+): Promise<AppuntamentoWriteOutcome> {
+  const plan = await buildWritePlan({
+    ambulatorioId: input.ambulatorio_id,
+    startDateTime: input.data_ora_inizio,
+    endDateTime: input.data_ora_fine,
+    options
+  });
+
+  if (plan.requiresOutsideHoursConfirmation || plan.requiresOverlapAdjustmentConfirmation) {
+    return buildRequiresConfirmationOutcome({
+      requiresOutsideHoursConfirmation: plan.requiresOutsideHoursConfirmation,
+      outsideHoursMessage: plan.outsideHoursMessage,
+      requiresOverlapAdjustmentConfirmation: plan.requiresOverlapAdjustmentConfirmation,
+      adjustments: plan.adjustments
+    });
+  }
+
+  const db = await initDatabase();
+  const transactionStarted = await beginWriteTransactionIfSupported(db);
+
+  try {
+    await applyExistingAppointmentAdjustments({
+      db,
+      updates: plan.updatesToApply
+    });
+
+    const insertResult = await db.execute(
+      `INSERT INTO appuntamenti (
+        ambulatorio_id,
+        paziente_id,
+        data_ora_inizio,
+        data_ora_fine,
+        durata_minuti,
+        motivo,
+        origine,
+        source_visita_id
+      ) VALUES (?, ?, ?, ?, ?, ?, 'manuale', NULL)`,
+      [
+        normalizeIntegerForWrite(input.ambulatorio_id),
+        normalizeIntegerForWrite(input.paziente_id),
+        plan.finalStartDateTime,
+        plan.finalEndDateTime,
+        normalizeIntegerForWrite(plan.finalDurationMinutes),
+        normalizeTextForWrite(input.motivo)
+      ]
+    );
+    const appointmentId = getLastInsertId(insertResult);
+
+    await commitWriteTransactionIfSupported(db, transactionStarted);
+
+    return {
+      saved: true,
+      appuntamentoId: appointmentId,
+      appliedAdjustments: plan.adjustments
+    };
+  } catch (error) {
+    await rollbackWriteTransactionIfSupported(db, transactionStarted);
+    throw error;
+  }
+}
+
+export async function updateAppuntamento(
+  input: UpdateAppuntamentoInput,
+  options?: AppuntamentoWriteOptions
+): Promise<AppuntamentoWriteOutcome> {
   const existing = await getAppuntamentoById(input.id);
   if (!existing) {
     throw new Error(`Appuntamento ${input.id} non trovato`);
@@ -424,35 +1102,74 @@ export async function updateAppuntamento(input: UpdateAppuntamentoInput): Promis
     input.paziente_id !== undefined
       ? normalizeIntegerForWrite(input.paziente_id)
       : normalizeIntegerForWrite(existing.paziente_id);
-  const nextDataOra =
+  const nextStartDateTime =
     input.data_ora_inizio !== undefined
       ? normalizeDateTime(input.data_ora_inizio)
       : normalizeDateTime(existing.data_ora_inizio);
-  const nextDurata =
-    input.durata_minuti !== undefined
-      ? normalizeDurationForWrite(input.durata_minuti)
-      : normalizeDurationForWrite(existing.durata_minuti);
+  const nextEndDateTime =
+    input.data_ora_fine !== undefined
+      ? normalizeDateTime(input.data_ora_fine)
+      : normalizeDateTime(existing.data_ora_fine);
   const nextMotivo =
     input.motivo !== undefined ? normalizeTextForWrite(input.motivo) : normalizeTextForWrite(existing.motivo);
 
-  await throwIfSlotNotAvailable({
+  const plan = await buildWritePlan({
     ambulatorioId: existing.ambulatorio_id,
-    dataOraInizio: nextDataOra,
-    excludeAppuntamentoId: existing.id
+    appointmentIdForUpdate: existing.id,
+    startDateTime: nextStartDateTime,
+    endDateTime: nextEndDateTime,
+    options
   });
 
+  if (plan.requiresOutsideHoursConfirmation || plan.requiresOverlapAdjustmentConfirmation) {
+    return buildRequiresConfirmationOutcome({
+      requiresOutsideHoursConfirmation: plan.requiresOutsideHoursConfirmation,
+      outsideHoursMessage: plan.outsideHoursMessage,
+      requiresOverlapAdjustmentConfirmation: plan.requiresOverlapAdjustmentConfirmation,
+      adjustments: plan.adjustments
+    });
+  }
+
   const db = await initDatabase();
-  await db.execute(
-    `UPDATE appuntamenti
-     SET
-       paziente_id = ?,
-       data_ora_inizio = ?,
-       durata_minuti = ?,
-       motivo = ?,
-       updated_at = CURRENT_TIMESTAMP
-     WHERE id = ?`,
-    [nextPazienteId, nextDataOra, nextDurata, nextMotivo, normalizeIntegerForWrite(input.id)]
-  );
+  const transactionStarted = await beginWriteTransactionIfSupported(db);
+
+  try {
+    await applyExistingAppointmentAdjustments({
+      db,
+      updates: plan.updatesToApply
+    });
+
+    await db.execute(
+      `UPDATE appuntamenti
+       SET
+         paziente_id = ?,
+         data_ora_inizio = ?,
+         data_ora_fine = ?,
+         durata_minuti = ?,
+         motivo = ?,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [
+        nextPazienteId,
+        plan.finalStartDateTime,
+        plan.finalEndDateTime,
+        normalizeIntegerForWrite(plan.finalDurationMinutes),
+        nextMotivo,
+        normalizeIntegerForWrite(input.id)
+      ]
+    );
+
+    await commitWriteTransactionIfSupported(db, transactionStarted);
+
+    return {
+      saved: true,
+      appuntamentoId: existing.id,
+      appliedAdjustments: plan.adjustments
+    };
+  } catch (error) {
+    await rollbackWriteTransactionIfSupported(db, transactionStarted);
+    throw error;
+  }
 }
 
 export async function deleteAppuntamento(id: number): Promise<void> {
@@ -465,38 +1182,241 @@ export async function createFollowUpAppuntamentoFromVisita(params: {
   ambulatorioId: number;
   pazienteId: number;
   dataOraInizio: string;
+  dataOraFine?: string;
   motivo?: string;
-}): Promise<number | null> {
+  options?: AppuntamentoWriteOptions;
+}): Promise<AppuntamentoWriteOutcome> {
   const existing = await getAppuntamentoBySourceVisitaId(params.visitaId);
   if (existing) {
-    return existing.id;
+    return {
+      saved: true,
+      appuntamentoId: existing.id,
+      appliedAdjustments: []
+    };
   }
 
-  await throwIfSlotNotAvailable({
+  const startDateTime = normalizeDateTime(params.dataOraInizio);
+  const durationSettings = await resolveAmbulatorioDurationSettings(params.ambulatorioId);
+  const endDateTime = params.dataOraFine
+    ? normalizeDateTime(params.dataOraFine)
+    : addMinutes(startDateTime, durationSettings.standardDurationMinutes);
+
+  const plan = await buildWritePlan({
     ambulatorioId: params.ambulatorioId,
-    dataOraInizio: params.dataOraInizio
+    startDateTime,
+    endDateTime,
+    settings: durationSettings.settings,
+    options: params.options
   });
 
-  await initDatabase();
-  return insertReturningId(
-    `INSERT INTO appuntamenti (
-      ambulatorio_id,
-      paziente_id,
-      data_ora_inizio,
-      durata_minuti,
-      motivo,
-      origine,
-      source_visita_id
-    ) VALUES (?, ?, ?, ?, ?, 'followup_visita', ?)`,
-    [
-      normalizeIntegerForWrite(params.ambulatorioId),
-      normalizeIntegerForWrite(params.pazienteId),
-      normalizeDateTime(params.dataOraInizio),
-      SLOT_DURATION_MINUTES,
-      normalizeTextForWrite(params.motivo),
-      normalizeIntegerForWrite(params.visitaId)
-    ]
+  if (plan.requiresOutsideHoursConfirmation || plan.requiresOverlapAdjustmentConfirmation) {
+    return buildRequiresConfirmationOutcome({
+      requiresOutsideHoursConfirmation: plan.requiresOutsideHoursConfirmation,
+      outsideHoursMessage: plan.outsideHoursMessage,
+      requiresOverlapAdjustmentConfirmation: plan.requiresOverlapAdjustmentConfirmation,
+      adjustments: plan.adjustments
+    });
+  }
+
+  const db = await initDatabase();
+  const transactionStarted = await beginWriteTransactionIfSupported(db);
+
+  try {
+    await applyExistingAppointmentAdjustments({
+      db,
+      updates: plan.updatesToApply
+    });
+
+    const insertResult = await db.execute(
+      `INSERT INTO appuntamenti (
+        ambulatorio_id,
+        paziente_id,
+        data_ora_inizio,
+        data_ora_fine,
+        durata_minuti,
+        motivo,
+        origine,
+        source_visita_id
+      ) VALUES (?, ?, ?, ?, ?, ?, 'followup_visita', ?)`,
+      [
+        normalizeIntegerForWrite(params.ambulatorioId),
+        normalizeIntegerForWrite(params.pazienteId),
+        plan.finalStartDateTime,
+        plan.finalEndDateTime,
+        normalizeIntegerForWrite(plan.finalDurationMinutes),
+        normalizeTextForWrite(params.motivo),
+        normalizeIntegerForWrite(params.visitaId)
+      ]
+    );
+    const appointmentId = getLastInsertId(insertResult);
+
+    await commitWriteTransactionIfSupported(db, transactionStarted);
+
+    return {
+      saved: true,
+      appuntamentoId: appointmentId,
+      appliedAdjustments: plan.adjustments
+    };
+  } catch (error) {
+    await rollbackWriteTransactionIfSupported(db, transactionStarted);
+    throw error;
+  }
+}
+
+async function findFirstSlot(params: FindFirstSlotParams & { mode: 'urgent' | 'quarter_hour' }): Promise<FirstSlotSearchResult> {
+  const searchStartDateTime = getDefaultSearchStartDateTime(params.fromDateTime);
+  const horizonDays = getSearchHorizonDays(params.horizonDays);
+  const searchStartDate = new Date(searchStartDateTime);
+  const horizonEndDate = new Date(searchStartDate);
+  horizonEndDate.setDate(horizonEndDate.getDate() + horizonDays);
+  const horizonEndDateTime = formatDateTime(horizonEndDate);
+
+  const durationSettings = await resolveAmbulatorioDurationSettings(params.ambulatorioId);
+  const settings = durationSettings.settings;
+  if (settings.windows.length === 0) {
+    return {
+      found: false,
+      startDateTime: null,
+      endDateTime: null,
+      requiresAdjustmentHint: false,
+      reasonIfNotFound: 'Nessun orario operativo configurato per questo ambulatorio.'
+    };
+  }
+
+  const candidateDurationMinutes =
+    params.mode === 'urgent'
+      ? Math.max(MIN_ALLOWED_VISIT_DURATION_MINUTES, durationSettings.minDurationMinutes)
+      : durationSettings.standardDurationMinutes;
+  const stepMinutes = params.mode === 'urgent' ? URGENT_SLOT_STEP_MINUTES : QUARTER_HOUR_STEP_MINUTES;
+  const firstSearchDay = new Date(`${searchStartDateTime.slice(0, 10)}T00:00`);
+  const dayCounts = await getDailyAppointmentCountsByRange({
+    ambulatorioId: params.ambulatorioId,
+    rangeStart: `${formatDateOnly(firstSearchDay)}T00:00`,
+    rangeEndExclusive: horizonEndDateTime
+  });
+  const appointmentCountByDay = new Map(
+    dayCounts.map((row) => [row.date, Number(row.total || 0)])
   );
+  let blockedByDailyCapacity = false;
+
+  for (let offsetDays = 0; offsetDays <= horizonDays; offsetDays += 1) {
+    const dayDate = new Date(firstSearchDay);
+    dayDate.setDate(firstSearchDay.getDate() + offsetDays);
+    const day = formatDateOnly(dayDate);
+    const dayStartDateTime = `${day}T00:00`;
+    if (dayStartDateTime >= horizonEndDateTime) {
+      break;
+    }
+
+    const weekday = toIsoWeekday(dayStartDateTime);
+    const dailyCapacityLimit = getDailyCapacityLimitForWeekday(settings.windows, weekday);
+    const currentDailyCount = appointmentCountByDay.get(day) ?? 0;
+    if (dailyCapacityLimit !== null && currentDailyCount >= dailyCapacityLimit) {
+      blockedByDailyCapacity = true;
+      continue;
+    }
+
+    const dayWindows = getDayWindowsWithinGlobalBounds({
+      day,
+      weekday,
+      windows: settings.windows
+    });
+
+    for (const dayWindow of dayWindows) {
+      let candidateStartDateTime = dayWindow.startDateTime;
+      if (day === searchStartDateTime.slice(0, 10) && candidateStartDateTime < searchStartDateTime) {
+        candidateStartDateTime = searchStartDateTime;
+      }
+
+      candidateStartDateTime = roundUpDateTimeToStep(candidateStartDateTime, stepMinutes);
+
+      while (
+        candidateStartDateTime < dayWindow.endDateTime &&
+        candidateStartDateTime < horizonEndDateTime
+      ) {
+        const candidateEndDateTime = addMinutes(candidateStartDateTime, candidateDurationMinutes);
+        if (candidateEndDateTime > dayWindow.endDateTime || candidateEndDateTime > horizonEndDateTime) {
+          break;
+        }
+
+        try {
+          if (params.mode === 'urgent') {
+            const plan = await buildWritePlan({
+              ambulatorioId: params.ambulatorioId,
+              startDateTime: candidateStartDateTime,
+              endDateTime: candidateEndDateTime,
+              settings,
+              options: {
+                confirmOutsideHours: true,
+                confirmOverlapAdjustments: true
+              }
+            });
+
+            return {
+              found: true,
+              startDateTime: plan.finalStartDateTime,
+              endDateTime: plan.finalEndDateTime,
+              requiresAdjustmentHint: plan.adjustments.length > 0
+            };
+          }
+
+          const plan = await buildWritePlan({
+            ambulatorioId: params.ambulatorioId,
+            startDateTime: candidateStartDateTime,
+            endDateTime: candidateEndDateTime,
+            settings
+          });
+          const requiresConfirmations =
+            plan.requiresOutsideHoursConfirmation || plan.requiresOverlapAdjustmentConfirmation;
+          const keepsRequestedEndTime = plan.finalEndDateTime === candidateEndDateTime;
+          if (!requiresConfirmations && plan.adjustments.length === 0 && keepsRequestedEndTime) {
+            return {
+              found: true,
+              startDateTime: plan.finalStartDateTime,
+              endDateTime: plan.finalEndDateTime,
+              requiresAdjustmentHint: false
+            };
+          }
+        } catch (error) {
+          if (!isRetryableFirstSlotCandidateError(error)) {
+            throw error;
+          }
+        }
+
+        candidateStartDateTime = addMinutes(candidateStartDateTime, stepMinutes);
+      }
+    }
+  }
+
+  return {
+    found: false,
+    startDateTime: null,
+    endDateTime: null,
+    requiresAdjustmentHint: false,
+    reasonIfNotFound:
+      blockedByDailyCapacity
+        ? `Nessuno slot disponibile entro ${horizonDays} giorni: raggiunto il numero massimo pazienti nei giorni utili.`
+        :
+      params.mode === 'urgent'
+        ? `Nessuno slot urgente disponibile entro ${horizonDays} giorni.`
+        : `Nessuno slot disponibile (00/15/30/45) entro ${horizonDays} giorni.`
+  };
+}
+
+export async function findFirstUrgentSlot(params: FindFirstSlotParams): Promise<FirstSlotSearchResult> {
+  return findFirstSlot({
+    ...params,
+    mode: 'urgent'
+  });
+}
+
+export async function findFirstQuarterHourSlot(
+  params: FindFirstSlotParams
+): Promise<FirstSlotSearchResult> {
+  return findFirstSlot({
+    ...params,
+    mode: 'quarter_hour'
+  });
 }
 
 export function normalizeAppuntamentoDateTimeInput(value: string): string {
@@ -509,13 +1429,16 @@ export function getDefaultSlotConfiguration(): {
   durationMinutes: number;
 } {
   return {
-    startHour: SLOT_START_HOUR,
-    endHour: SLOT_END_HOUR,
-    durationMinutes: SLOT_DURATION_MINUTES
+    startHour: DEFAULT_SLOT_START_HOUR,
+    endHour: DEFAULT_SLOT_END_HOUR,
+    durationMinutes: DEFAULT_APPOINTMENT_DURATION_MINUTES
   };
 }
 
-export function getAppuntamentoEndDateTime(startDateTime: string, durationMinutes = SLOT_DURATION_MINUTES): string {
+export function getAppuntamentoEndDateTime(
+  startDateTime: string,
+  durationMinutes = DEFAULT_APPOINTMENT_DURATION_MINUTES
+): string {
   return addMinutes(startDateTime, durationMinutes);
 }
 
@@ -555,7 +1478,25 @@ export function parseFollowUpScheduling(raw: string | null | undefined): {
 export async function getSlotConflictByDateTime(params: {
   ambulatorioId: number;
   dataOraInizio: string;
+  dataOraFine?: string;
   excludeAppuntamentoId?: number;
 }): Promise<Appuntamento | null> {
-  return findConflictBySlot(params);
+  const startDateTime = normalizeDateTime(params.dataOraInizio);
+  const durationSettings = await resolveAmbulatorioDurationSettings(params.ambulatorioId);
+  const endDateTime = params.dataOraFine
+    ? normalizeDateTime(params.dataOraFine)
+    : addMinutes(startDateTime, durationSettings.standardDurationMinutes);
+
+  const conflicts = await getOverlappingAppointments({
+    ambulatorioId: params.ambulatorioId,
+    startDateTime,
+    endDateTime,
+    excludeAppuntamentoId: params.excludeAppuntamentoId
+  });
+
+  return conflicts[0] ?? null;
+}
+
+export async function getAmbulatorioOperatingWindows(ambulatorioId: number) {
+  return getAmbulatorioOperatingWindowsById(ambulatorioId);
 }

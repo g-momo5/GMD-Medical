@@ -12,10 +12,25 @@ type SchemaObjectRow = {
   sql: string | null;
 };
 
+const DEFAULT_APPOINTMENT_DURATION_MINUTES = 15;
+const DEFAULT_MIN_VISIT_DURATION_MINUTES = 10;
+const DEFAULT_STANDARD_VISIT_DURATION_MINUTES = 15;
+const DEFAULT_MAX_PATIENTS_PER_DAY = 25;
+const DEFAULT_MAX_PATIENTS_PER_DAY_MONDAY = 15;
+const DEFAULT_MAX_PATIENTS_PER_DAY_THURSDAY = 25;
+
 const ambulatoriColumns: ColumnDefinition[] = [
   { name: 'indirizzo', definition: 'TEXT' },
   { name: 'telefono', definition: 'TEXT' },
-  { name: 'email', definition: 'TEXT' }
+  { name: 'email', definition: 'TEXT' },
+  {
+    name: 'durata_minima_visita_minuti',
+    definition: `INTEGER NOT NULL DEFAULT ${DEFAULT_MIN_VISIT_DURATION_MINUTES}`
+  },
+  {
+    name: 'durata_standard_visita_minuti',
+    definition: `INTEGER NOT NULL DEFAULT ${DEFAULT_STANDARD_VISIT_DURATION_MINUTES}`
+  }
 ];
 
 const pazientiColumns: ColumnDefinition[] = [
@@ -45,7 +60,8 @@ const visiteColumns: ColumnDefinition[] = [
 ];
 
 const appuntamentiColumns: ColumnDefinition[] = [
-  { name: 'durata_minuti', definition: 'INTEGER NOT NULL DEFAULT 30' },
+  { name: 'durata_minuti', definition: `INTEGER NOT NULL DEFAULT ${DEFAULT_APPOINTMENT_DURATION_MINUTES}` },
+  { name: 'data_ora_fine', definition: 'DATETIME' },
   { name: 'motivo', definition: 'TEXT' },
   { name: 'origine', definition: "TEXT NOT NULL DEFAULT 'manuale'" },
   { name: 'source_visita_id', definition: 'INTEGER' }
@@ -56,6 +72,13 @@ const fattoriRischioColumns: ColumnDefinition[] = [
   { name: 'fumo_ex_eta', definition: 'TEXT' }
 ];
 
+const ambulatorioOrariColumns: ColumnDefinition[] = [
+  {
+    name: 'max_pazienti_giorno',
+    definition: `INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_PATIENTS_PER_DAY}`
+  }
+];
+
 const indexStatements = [
   'CREATE INDEX IF NOT EXISTS idx_pazienti_ambulatorio ON pazienti(ambulatorio_id)',
   'CREATE INDEX IF NOT EXISTS idx_pazienti_cognome ON pazienti(cognome)',
@@ -63,10 +86,10 @@ const indexStatements = [
   'CREATE INDEX IF NOT EXISTS idx_visite_ambulatorio ON visite(ambulatorio_id)',
   'CREATE INDEX IF NOT EXISTS idx_visite_paziente ON visite(paziente_id)',
   'CREATE INDEX IF NOT EXISTS idx_visite_data ON visite(data_visita)',
-  'CREATE INDEX IF NOT EXISTS idx_appuntamenti_ambulatorio_data ON appuntamenti(ambulatorio_id, data_ora_inizio)',
+  'CREATE INDEX IF NOT EXISTS idx_appuntamenti_ambulatorio_data ON appuntamenti(ambulatorio_id, data_ora_inizio, data_ora_fine)',
   'CREATE INDEX IF NOT EXISTS idx_appuntamenti_paziente_data ON appuntamenti(paziente_id, data_ora_inizio)',
-  'CREATE UNIQUE INDEX IF NOT EXISTS ux_appuntamenti_slot ON appuntamenti(ambulatorio_id, data_ora_inizio)',
   'CREATE UNIQUE INDEX IF NOT EXISTS ux_appuntamenti_source_visita ON appuntamenti(source_visita_id) WHERE source_visita_id IS NOT NULL',
+  'CREATE INDEX IF NOT EXISTS idx_ambulatorio_orari_ambulatorio_weekday ON ambulatorio_orari(ambulatorio_id, weekday, ora_inizio)',
   'CREATE INDEX IF NOT EXISTS idx_fattori_rischio_visita ON fattori_rischio_cv(visita_id)'
 ];
 
@@ -120,6 +143,8 @@ async function createBaseTables(db: Database): Promise<void> {
       indirizzo TEXT,
       telefono TEXT,
       email TEXT,
+      durata_minima_visita_minuti INTEGER NOT NULL DEFAULT ${DEFAULT_MIN_VISIT_DURATION_MINUTES},
+      durata_standard_visita_minuti INTEGER NOT NULL DEFAULT ${DEFAULT_STANDARD_VISIT_DURATION_MINUTES},
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -192,7 +217,8 @@ async function createBaseTables(db: Database): Promise<void> {
       ambulatorio_id INTEGER NOT NULL,
       paziente_id INTEGER NOT NULL,
       data_ora_inizio DATETIME NOT NULL,
-      durata_minuti INTEGER NOT NULL DEFAULT 30,
+      data_ora_fine DATETIME NOT NULL,
+      durata_minuti INTEGER NOT NULL DEFAULT ${DEFAULT_APPOINTMENT_DURATION_MINUTES},
       motivo TEXT,
       origine TEXT NOT NULL DEFAULT 'manuale',
       source_visita_id INTEGER,
@@ -202,6 +228,21 @@ async function createBaseTables(db: Database): Promise<void> {
       FOREIGN KEY (paziente_id) REFERENCES pazienti(id) ON DELETE CASCADE,
       FOREIGN KEY (source_visita_id) REFERENCES visite(id) ON DELETE SET NULL,
       CHECK (origine IN ('manuale', 'followup_visita'))
+    )
+  `);
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS ambulatorio_orari (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ambulatorio_id INTEGER NOT NULL,
+      weekday INTEGER NOT NULL,
+      ora_inizio TEXT NOT NULL,
+      ora_fine TEXT NOT NULL,
+      max_pazienti_giorno INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_PATIENTS_PER_DAY},
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (ambulatorio_id) REFERENCES ambulatori(id) ON DELETE CASCADE,
+      CHECK (weekday BETWEEN 1 AND 7)
     )
   `);
 
@@ -236,12 +277,20 @@ type FollowUpRow = {
   id: number;
   ambulatorio_id: number;
   paziente_id: number;
+  durata_standard_visita_minuti: number | null;
   pianificazione_followup: string | null;
 };
 
 type FollowUpPayload = {
   dataOraProssimaVisita?: unknown;
   motivoProssimaVisita?: unknown;
+};
+
+type AppuntamentoBackfillRow = {
+  id: number;
+  data_ora_inizio: string;
+  data_ora_fine: string | null;
+  durata_minuti: number | null;
 };
 
 function normalizeFollowUpDateTime(value: unknown): string | null {
@@ -292,12 +341,188 @@ function normalizeFollowUpDateTime(value: unknown): string | null {
   return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}`;
 }
 
+function normalizeDateTime(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6] ?? '0');
+  const date = new Date(year, month - 1, day, hour, minute, second);
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day ||
+    date.getHours() !== hour ||
+    date.getMinutes() !== minute
+  ) {
+    return null;
+  }
+
+  return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}`;
+}
+
+function addMinutesToDateTime(value: string, minutes: number): string {
+  const normalized = normalizeDateTime(value);
+  if (!normalized) {
+    throw new Error(`Data/ora non valida: ${value}`);
+  }
+
+  const date = new Date(normalized);
+  date.setMinutes(date.getMinutes() + minutes);
+
+  const yyyy = String(date.getFullYear());
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+}
+
+function calculateDurationMinutes(startDateTime: string, endDateTime: string): number {
+  const start = new Date(startDateTime);
+  const end = new Date(endDateTime);
+  return Math.round((end.getTime() - start.getTime()) / 60000);
+}
+
+async function dropLegacyFixedSlotIndexes(db: Database): Promise<void> {
+  await db.execute('DROP INDEX IF EXISTS ux_appuntamenti_slot');
+}
+
+async function backfillAppuntamentiEndDateTime(db: Database): Promise<void> {
+  const rows = await db.select<AppuntamentoBackfillRow[]>(
+    'SELECT id, data_ora_inizio, data_ora_fine, durata_minuti FROM appuntamenti'
+  );
+
+  for (const row of rows) {
+    const startDateTime = normalizeDateTime(row.data_ora_inizio);
+    if (!startDateTime) {
+      continue;
+    }
+
+    const parsedDuration = Number(row.durata_minuti ?? 0);
+    const durationMinutes =
+      Number.isFinite(parsedDuration) && parsedDuration > 0
+        ? parsedDuration
+        : DEFAULT_APPOINTMENT_DURATION_MINUTES;
+
+    const normalizedEndDateTime = normalizeDateTime(row.data_ora_fine);
+    const endDateTime =
+      normalizedEndDateTime && calculateDurationMinutes(startDateTime, normalizedEndDateTime) > 0
+        ? normalizedEndDateTime
+        : addMinutesToDateTime(startDateTime, durationMinutes);
+
+    const normalizedDuration = calculateDurationMinutes(startDateTime, endDateTime);
+    if (normalizedDuration <= 0) {
+      continue;
+    }
+
+    await db.execute(
+      `UPDATE appuntamenti
+       SET data_ora_inizio = ?, data_ora_fine = ?, durata_minuti = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [startDateTime, endDateTime, normalizedDuration, row.id]
+    );
+  }
+}
+
+type AmbulatorioIdRow = { id: number };
+type CountRow = { count: number | string };
+
+async function ensureDefaultOperatingHoursForAmbulatori(db: Database): Promise<void> {
+  const ambulatori = await db.select<AmbulatorioIdRow[]>('SELECT id FROM ambulatori');
+
+  for (const ambulatorio of ambulatori) {
+    const rows = await db.select<CountRow[]>(
+      'SELECT COUNT(*) AS count FROM ambulatorio_orari WHERE ambulatorio_id = ?',
+      [ambulatorio.id]
+    );
+    const count = Number(rows[0]?.count ?? 0);
+
+    if (count > 0) {
+      continue;
+    }
+
+    await db.execute(
+      `INSERT INTO ambulatorio_orari (
+        ambulatorio_id,
+        weekday,
+        ora_inizio,
+        ora_fine,
+        max_pazienti_giorno
+      ) VALUES (?, 1, '15:00', '18:00', ?)`,
+      [ambulatorio.id, DEFAULT_MAX_PATIENTS_PER_DAY_MONDAY]
+    );
+    await db.execute(
+      `INSERT INTO ambulatorio_orari (
+        ambulatorio_id,
+        weekday,
+        ora_inizio,
+        ora_fine,
+        max_pazienti_giorno
+      ) VALUES (?, 4, '08:30', '14:00', ?)`,
+      [ambulatorio.id, DEFAULT_MAX_PATIENTS_PER_DAY_THURSDAY]
+    );
+  }
+}
+
+async function ensureOperatingWindowDailyCapacityBounds(db: Database): Promise<void> {
+  await db.execute(
+    `UPDATE ambulatorio_orari
+     SET max_pazienti_giorno = CASE
+       WHEN weekday = 1 THEN ?
+       WHEN weekday = 4 THEN ?
+       ELSE ?
+     END,
+     updated_at = CURRENT_TIMESTAMP
+     WHERE max_pazienti_giorno IS NULL OR max_pazienti_giorno < 1`,
+    [
+      DEFAULT_MAX_PATIENTS_PER_DAY_MONDAY,
+      DEFAULT_MAX_PATIENTS_PER_DAY_THURSDAY,
+      DEFAULT_MAX_PATIENTS_PER_DAY
+    ]
+  );
+}
+
+async function ensureAmbulatorioStandardVisitDurationBounds(db: Database): Promise<void> {
+  await db.execute(
+    `UPDATE ambulatori
+     SET durata_standard_visita_minuti = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE durata_standard_visita_minuti IS NULL OR durata_standard_visita_minuti < ?`,
+    [DEFAULT_STANDARD_VISIT_DURATION_MINUTES, DEFAULT_MIN_VISIT_DURATION_MINUTES]
+  );
+
+  await db.execute(
+    `UPDATE ambulatori
+     SET durata_standard_visita_minuti = durata_minima_visita_minuti,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE durata_standard_visita_minuti < durata_minima_visita_minuti`
+  );
+}
+
 async function backfillFollowUpAppointments(db: Database): Promise<void> {
   const rows = await db.select<FollowUpRow[]>(
-    `SELECT id, ambulatorio_id, paziente_id, pianificazione_followup
-     FROM visite
-     WHERE pianificazione_followup IS NOT NULL
-       AND TRIM(pianificazione_followup) <> ''`
+    `SELECT
+       v.id,
+       v.ambulatorio_id,
+       v.paziente_id,
+       v.pianificazione_followup,
+       a.durata_standard_visita_minuti
+     FROM visite v
+     INNER JOIN ambulatori a ON a.id = v.ambulatorio_id
+     WHERE v.pianificazione_followup IS NOT NULL
+       AND TRIM(v.pianificazione_followup) <> ''`
   );
 
   for (const row of rows) {
@@ -321,18 +546,32 @@ async function backfillFollowUpAppointments(db: Database): Promise<void> {
       typeof parsed.motivoProssimaVisita === 'string' && parsed.motivoProssimaVisita.trim()
         ? parsed.motivoProssimaVisita.trim()
         : null;
+    const parsedStandardDuration = Number(row.durata_standard_visita_minuti ?? DEFAULT_STANDARD_VISIT_DURATION_MINUTES);
+    const durationMinutes =
+      Number.isFinite(parsedStandardDuration) && parsedStandardDuration >= DEFAULT_MIN_VISIT_DURATION_MINUTES
+        ? Math.floor(parsedStandardDuration)
+        : DEFAULT_STANDARD_VISIT_DURATION_MINUTES;
 
     await db.execute(
       `INSERT OR IGNORE INTO appuntamenti (
          ambulatorio_id,
          paziente_id,
          data_ora_inizio,
+         data_ora_fine,
          durata_minuti,
          motivo,
          origine,
          source_visita_id
-       ) VALUES (?, ?, ?, 30, ?, 'followup_visita', ?)`,
-      [row.ambulatorio_id, row.paziente_id, dataOraProssimaVisita, motivoProssimaVisita, row.id]
+       ) VALUES (?, ?, ?, ?, ?, ?, 'followup_visita', ?)`,
+      [
+        row.ambulatorio_id,
+        row.paziente_id,
+        dataOraProssimaVisita,
+        addMinutesToDateTime(dataOraProssimaVisita, durationMinutes),
+        durationMinutes,
+        motivoProssimaVisita,
+        row.id
+      ]
     );
   }
 }
@@ -486,8 +725,14 @@ export async function applyMigrations(db: Database): Promise<void> {
   await addMissingColumns(db, 'visite', visiteColumns);
   await addMissingColumns(db, 'appuntamenti', appuntamentiColumns);
   await addMissingColumns(db, 'fattori_rischio_cv', fattoriRischioColumns);
+  await addMissingColumns(db, 'ambulatorio_orari', ambulatorioOrariColumns);
+  await ensureAmbulatorioStandardVisitDurationBounds(db);
+  await ensureOperatingWindowDailyCapacityBounds(db);
   await ensureFattoriRischioCvReferencesVisite(db);
+  await dropLegacyFixedSlotIndexes(db);
   await ensureIndexes(db);
   await backfillFollowUpAppointments(db);
+  await backfillAppuntamentiEndDateTime(db);
+  await ensureDefaultOperatingHoursForAmbulatori(db);
   await updateLegacyAmbulatorioLabel(db);
 }

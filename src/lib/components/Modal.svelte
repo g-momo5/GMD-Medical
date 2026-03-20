@@ -2,8 +2,13 @@
   export let open = false;
   export let title = '';
   export let size: 'sm' | 'md' | 'lg' | 'xl' = 'md';
+  export let closeOnBackdropClick = true;
 
   function handleBackdropClick(e: MouseEvent) {
+    if (!closeOnBackdropClick) {
+      return;
+    }
+
     if (e.target === e.currentTarget) {
       open = false;
     }

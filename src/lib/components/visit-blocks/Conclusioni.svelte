@@ -1,6 +1,15 @@
 <script lang="ts">
-  import { getSlotDisponibilitaByDay } from '$lib/db/appuntamenti';
-  import type { AppuntamentoSlotDisponibilita, PianificazioneFollowUp } from '$lib/db/types';
+  import {
+    findFirstQuarterHourSlot,
+    findFirstUrgentSlot,
+    getSlotDisponibilitaByDay
+  } from '$lib/db/appuntamenti';
+  import { toastStore } from '$lib/stores/toast';
+  import type {
+    AppuntamentoSlotDisponibilita,
+    FirstSlotSearchMode,
+    PianificazioneFollowUp
+  } from '$lib/db/types';
   import { createEmptyPianificazioneFollowUp } from '$lib/utils/visit-clinical';
   import Card from '../Card.svelte';
   import Icon from '../Icon.svelte';
@@ -41,6 +50,9 @@
   let loadingSlotDisponibilita = false;
   let slotDisponibilita: AppuntamentoSlotDisponibilita[] = [];
   let slotDisponibilitaError = '';
+  let searchingFirstSlotMode: FirstSlotSearchMode | null = null;
+  let nextUrgentSearchCursor: string | null = null;
+  let nextQuarterHourSearchCursor: string | null = null;
 
   // Stato dei pulsanti di formattazione
   let isBoldActive = false;
@@ -68,6 +80,10 @@
       slotLookupKey = nextLookupKey;
       void loadSlotDisponibilita(nextLookupKey, followUpDateForSlots);
     }
+  }
+  $: if (!ambulatorioId) {
+    nextUrgentSearchCursor = null;
+    nextQuarterHourSearchCursor = null;
   }
 
   // Aggiorna lo stato dei pulsanti in base alla posizione del cursore
@@ -707,6 +723,70 @@
     syncFollowUpDateTimeValue();
     focusFollowUpSegment('minute');
   }
+
+  function formatDateTimeForMessage(value: string): string {
+    return `${value.slice(8, 10)}/${value.slice(5, 7)}/${value.slice(0, 4)} ${value.slice(11, 16)}`;
+  }
+
+  async function handleFindFirstSlot(mode: FirstSlotSearchMode, searchNext = false): Promise<void> {
+    if (!ambulatorioId || searchingFirstSlotMode) {
+      return;
+    }
+
+    searchingFirstSlotMode = mode;
+    try {
+      const fromDateTime = searchNext
+        ? (mode === 'urgent'
+            ? (nextUrgentSearchCursor ?? undefined)
+            : (nextQuarterHourSearchCursor ?? undefined))
+        : undefined;
+      const result =
+        mode === 'urgent'
+          ? await findFirstUrgentSlot({ ambulatorioId, fromDateTime })
+          : await findFirstQuarterHourSlot({ ambulatorioId, fromDateTime });
+
+      if (!result.found || !result.startDateTime) {
+        toastStore.show(
+          'info',
+          result.reasonIfNotFound || 'Nessuno slot disponibile trovato nei prossimi 180 giorni.'
+        );
+        return;
+      }
+
+      syncFollowUpSegments(result.startDateTime);
+      updatePianificazioneField('dataOraProssimaVisita', result.startDateTime);
+      focusFollowUpSegment('minute');
+
+      if (mode === 'urgent') {
+        nextUrgentSearchCursor = result.endDateTime ?? result.startDateTime;
+      } else {
+        nextQuarterHourSearchCursor = result.endDateTime ?? result.startDateTime;
+      }
+
+      const endLabel = result.endDateTime ? ` - ${result.endDateTime.slice(11, 16)}` : '';
+      const slotLabel =
+        mode === 'urgent'
+          ? (searchNext ? 'Slot urgente successivo' : 'Primo slot urgente')
+          : (searchNext ? 'Slot disponibile successivo' : 'Primo slot disponibile');
+      toastStore.show(
+        'success',
+        `${slotLabel} trovato: ${formatDateTimeForMessage(result.startDateTime)}${endLabel}`
+      );
+
+      if (mode === 'urgent' && result.requiresAdjustmentHint) {
+        toastStore.show(
+          'info',
+          'Lo slot urgente richiederà conferma degli aggiustamenti anti-overlap al salvataggio.'
+        );
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message ? error.message : 'Errore durante la ricerca slot';
+      toastStore.show('error', message);
+    } finally {
+      searchingFirstSlotMode = null;
+    }
+  }
 </script>
 
 <Card>
@@ -841,8 +921,45 @@
             </div>
           </div>
 
+          <div class="follow-up-actions">
+            <button
+              type="button"
+              class="follow-up-action-btn"
+              on:click={() => handleFindFirstSlot('urgent')}
+              disabled={Boolean(searchingFirstSlotMode) || !ambulatorioId}
+            >
+              {searchingFirstSlotMode === 'urgent' ? 'Ricerca slot urgente...' : 'Primo slot urgente'}
+            </button>
+            <button
+              type="button"
+              class="follow-up-action-btn"
+              on:click={() => handleFindFirstSlot('urgent', true)}
+              disabled={Boolean(searchingFirstSlotMode) || !ambulatorioId || !nextUrgentSearchCursor}
+            >
+              Slot urgente successivo
+            </button>
+            <button
+              type="button"
+              class="follow-up-action-btn"
+              on:click={() => handleFindFirstSlot('quarter_hour')}
+              disabled={Boolean(searchingFirstSlotMode) || !ambulatorioId}
+            >
+              {searchingFirstSlotMode === 'quarter_hour'
+                ? 'Ricerca slot disponibile...'
+                : 'Primo slot disponibile'}
+            </button>
+            <button
+              type="button"
+              class="follow-up-action-btn"
+              on:click={() => handleFindFirstSlot('quarter_hour', true)}
+              disabled={Boolean(searchingFirstSlotMode) || !ambulatorioId || !nextQuarterHourSearchCursor}
+            >
+              Slot disponibile successivo
+            </button>
+          </div>
+
           <div class="follow-up-slots">
-            <div class="follow-up-slots-title">Slot disponibili (08:00-20:00, ogni 30 minuti)</div>
+            <div class="follow-up-slots-title">Slot disponibili in base agli orari dell'ambulatorio</div>
 
             {#if !followUpDateForSlots}
               <p class="follow-up-slots-hint">Completa la data per vedere gli slot liberi.</p>
@@ -850,6 +967,8 @@
               <p class="follow-up-slots-hint">Caricamento disponibilità...</p>
             {:else if slotDisponibilitaError}
               <p class="follow-up-slots-error">{slotDisponibilitaError}</p>
+            {:else if slotDisponibilita.length === 0}
+              <p class="follow-up-slots-hint">Nessuno slot disponibile per il giorno selezionato.</p>
             {:else}
               <div class="follow-up-slots-grid">
                 {#each slotDisponibilita as slot}
@@ -1093,6 +1212,35 @@
     min-height: 88px;
     resize: vertical;
     line-height: 1.5;
+  }
+
+  .follow-up-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-1);
+  }
+
+  .follow-up-action-btn {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 6px 10px;
+    background: var(--color-bg-primary);
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .follow-up-action-btn:hover:not(:disabled) {
+    background: var(--color-bg-secondary);
+    border-color: var(--color-text-tertiary);
+  }
+
+  .follow-up-action-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .follow-up-slots {

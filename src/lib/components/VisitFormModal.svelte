@@ -2,10 +2,17 @@
   import { createEventDispatcher } from 'svelte';
   import { getAllPazienti } from '$lib/db/pazienti';
   import { getFattoriRischioCVByVisitaId } from '$lib/db/fattori-rischio-cv';
-  import { checkAppuntamentoSlotAvailability } from '$lib/db/appuntamenti';
+  import { previewAppuntamentoWrite } from '$lib/db/appuntamenti';
   import { getPreviousEsamiEmaticiByPaziente } from '$lib/db/visite';
   import { isBlockVisibleForAmbulatorio } from '$lib/configs/visit-blocks-config';
-  import type { DiabeteTipo, Paziente, PreviousEsamiEmaticiMap, Visita } from '$lib/db/types';
+  import type {
+    AppuntamentoWriteOptions,
+    AppuntamentoWriteRequirements,
+    DiabeteTipo,
+    Paziente,
+    PreviousEsamiEmaticiMap,
+    Visita
+  } from '$lib/db/types';
   import {
     createEmptyEsamiEmatici,
     createEmptyFHAssessment,
@@ -119,6 +126,88 @@
   let conclusioni = '';
   let pianificazioneFollowUp = createEmptyPianificazioneFollowUp();
   let firmeVisita = createEmptyFirmeVisita();
+
+  function formatFollowUpAdjustmentsMessage(
+    requirements: AppuntamentoWriteRequirements
+  ): string {
+    if (!requirements.overlapAdjustments.length) {
+      return 'Sono richiesti aggiustamenti automatici per evitare sovrapposizioni.';
+    }
+
+    const lines = requirements.overlapAdjustments.map((adjustment) => {
+      if (adjustment.type === 'trim_previous_end') {
+        const subject = `Appuntamento precedente${adjustment.pazienteNome ? ` (${adjustment.pazienteNome})` : ''}`;
+        return `- ${subject}: fine ${adjustment.oldEnd.slice(11, 16)} -> ${adjustment.newEnd.slice(11, 16)}`;
+      }
+
+      if (adjustment.type === 'trim_next_start') {
+        const subject = `Appuntamento successivo${adjustment.pazienteNome ? ` (${adjustment.pazienteNome})` : ''}`;
+        return `- ${subject}: inizio ${adjustment.oldEnd.slice(11, 16)} -> ${adjustment.newEnd.slice(11, 16)}`;
+      }
+
+      return `- Nuovo appuntamento: fine ${adjustment.oldEnd.slice(11, 16)} -> ${adjustment.newEnd.slice(11, 16)}`;
+    });
+
+    return `Per evitare sovrapposizioni verranno applicate queste modifiche:\\n${lines.join('\\n')}`;
+  }
+
+  async function resolveFollowUpWriteOptions(
+    followUpDateTime: string
+  ): Promise<AppuntamentoWriteOptions | null> {
+    let options: AppuntamentoWriteOptions = {};
+
+    while (true) {
+      const preview = await previewAppuntamentoWrite({
+        ambulatorioId,
+        dataOraInizio: followUpDateTime,
+        options
+      });
+
+      if (preview.saved) {
+        return options;
+      }
+
+      const requirements = preview.requirements;
+      if (!requirements) {
+        return options;
+      }
+
+      if (requirements.requiresOutsideHoursConfirmation && !options.confirmOutsideHours) {
+        const confirmed = window.confirm(
+          `${requirements.outsideHoursMessage || 'Appuntamento fuori orario/giorno di ambulatorio.'}\\n\\nConfermi comunque la prenotazione?`
+        );
+        if (!confirmed) {
+          return null;
+        }
+
+        options = {
+          ...options,
+          confirmOutsideHours: true
+        };
+        continue;
+      }
+
+      if (
+        requirements.requiresOverlapAdjustmentConfirmation &&
+        !options.confirmOverlapAdjustments
+      ) {
+        const confirmed = window.confirm(
+          `${formatFollowUpAdjustmentsMessage(requirements)}\\n\\nConfermi le modifiche automatiche?`
+        );
+        if (!confirmed) {
+          return null;
+        }
+
+        options = {
+          ...options,
+          confirmOverlapAdjustments: true
+        };
+        continue;
+      }
+
+      return null;
+    }
+  }
 
   function createEmptyFattoriRischio() {
     return {
@@ -418,24 +507,18 @@
     }
 
     const followUpDateTime = (pianificazioneFollowUp.dataOraProssimaVisita || '').trim();
+    let followUpWriteOptions: AppuntamentoWriteOptions | undefined;
     if (followUpDateTime) {
       try {
-        const availability = await checkAppuntamentoSlotAvailability({
-          ambulatorioId,
-          dataOraInizio: followUpDateTime
-        });
-
-        if (!availability.available) {
-          const suggestionsText =
-            availability.suggestedTimes.length > 0
-              ? ` Slot disponibili: ${availability.suggestedTimes.join(', ')}.`
-              : '';
-          alert(`Lo slot scelto per la prossima visita non è disponibile.${suggestionsText}`);
+        const resolvedOptions = await resolveFollowUpWriteOptions(followUpDateTime);
+        if (resolvedOptions === null) {
+          alert('Programmazione prossima visita annullata');
           return;
         }
+        followUpWriteOptions = resolvedOptions;
       } catch (error) {
         alert(
-          `Impossibile validare lo slot della prossima visita: ${
+          `Impossibile validare la prossima visita: ${
             error instanceof Error ? error.message : 'errore sconosciuto'
           }`
         );
@@ -487,7 +570,8 @@
         obesita: fattoriRischio.obesita,
         fumo: fattoriRischio.fumo,
         fumo_ex_eta: fattoriRischio.fumo_ex_eta || undefined
-      }
+      },
+      followUpWriteOptions
     });
   }
 

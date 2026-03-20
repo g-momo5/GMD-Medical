@@ -1,4 +1,5 @@
 import type {
+  AppuntamentoWriteOptions,
   CreateFattoriRischioCVInput,
   CreateVisitaInput,
   UpdateFattoriRischioCVInput,
@@ -10,10 +11,11 @@ import {
   updateFattoriRischioCV
 } from './fattori-rischio-cv';
 import {
-  checkAppuntamentoSlotAvailability,
+  buildConfirmationRequiredErrorMessage,
   createFollowUpAppuntamentoFromVisita,
   getAppuntamentoBySourceVisitaId,
-  parseFollowUpScheduling
+  parseFollowUpScheduling,
+  previewAppuntamentoWrite
 } from './appuntamenti';
 import { createVisita, getVisitaById, updateVisita } from './visite';
 
@@ -34,42 +36,33 @@ function hasMeaningfulFattoriRischioCV(input: FattoriRischioPayload): boolean {
   );
 }
 
-function buildFollowUpSlotErrorMessage(
-  dataOraProssimaVisita: string,
-  suggestedTimes: string[]
-): string {
-  const datePart = dataOraProssimaVisita.slice(0, 10);
-  const timePart = dataOraProssimaVisita.slice(11, 16);
-  const suggestionsText =
-    suggestedTimes.length > 0 ? ` Slot disponibili: ${suggestedTimes.join(', ')}.` : '';
-  return `Lo slot della prossima visita (${datePart} ${timePart}) non è disponibile.${suggestionsText}`;
-}
-
-async function validateFollowUpSlot(params: {
+async function ensureFollowUpCanBeScheduled(params: {
   ambulatorioId: number;
   dataOraProssimaVisita: string;
+  options?: AppuntamentoWriteOptions;
 }): Promise<void> {
-  const availability = await checkAppuntamentoSlotAvailability({
+  const preview = await previewAppuntamentoWrite({
     ambulatorioId: params.ambulatorioId,
-    dataOraInizio: params.dataOraProssimaVisita
+    dataOraInizio: params.dataOraProssimaVisita,
+    options: params.options
   });
 
-  if (!availability.available) {
-    throw new Error(
-      buildFollowUpSlotErrorMessage(params.dataOraProssimaVisita, availability.suggestedTimes)
-    );
+  if (!preview.saved && preview.requirements) {
+    throw new Error(buildConfirmationRequiredErrorMessage(preview.requirements));
   }
 }
 
 export async function createVisitaCompleta(input: {
   visita: CreateVisitaInput;
   fattoriRischioCV: Omit<CreateFattoriRischioCVInput, 'visita_id'>;
+  followUpWriteOptions?: AppuntamentoWriteOptions;
 }): Promise<number> {
   const followUpScheduling = parseFollowUpScheduling(input.visita.pianificazione_followup);
   if (followUpScheduling) {
-    await validateFollowUpSlot({
+    await ensureFollowUpCanBeScheduled({
       ambulatorioId: input.visita.ambulatorio_id,
-      dataOraProssimaVisita: followUpScheduling.dataOraProssimaVisita
+      dataOraProssimaVisita: followUpScheduling.dataOraProssimaVisita,
+      options: input.followUpWriteOptions
     });
   }
 
@@ -83,13 +76,18 @@ export async function createVisitaCompleta(input: {
   }
 
   if (followUpScheduling) {
-    await createFollowUpAppuntamentoFromVisita({
+    const followUpCreation = await createFollowUpAppuntamentoFromVisita({
       visitaId,
       ambulatorioId: input.visita.ambulatorio_id,
       pazienteId: input.visita.paziente_id,
       dataOraInizio: followUpScheduling.dataOraProssimaVisita,
-      motivo: followUpScheduling.motivoProssimaVisita
+      motivo: followUpScheduling.motivoProssimaVisita,
+      options: input.followUpWriteOptions
     });
+
+    if (!followUpCreation.saved && followUpCreation.requirements) {
+      throw new Error(buildConfirmationRequiredErrorMessage(followUpCreation.requirements));
+    }
   }
 
   return visitaId;
@@ -98,6 +96,7 @@ export async function createVisitaCompleta(input: {
 export async function updateVisitaCompleta(input: {
   visita: UpdateVisitaInput;
   fattoriRischioCV: Omit<UpdateFattoriRischioCVInput, 'id'>;
+  followUpWriteOptions?: AppuntamentoWriteOptions;
 }): Promise<void> {
   const visitaId = input.fattoriRischioCV.visita_id ?? input.visita.id;
   if (!visitaId) {
@@ -110,6 +109,7 @@ export async function updateVisitaCompleta(input: {
         pazienteId: number;
         dataOraInizio: string;
         motivo: string;
+        options?: AppuntamentoWriteOptions;
       }
     | null = null;
 
@@ -125,16 +125,18 @@ export async function updateVisitaCompleta(input: {
       const ambulatorioId = input.visita.ambulatorio_id ?? visita.ambulatorio_id;
       const pazienteId = input.visita.paziente_id ?? visita.paziente_id;
 
-      await validateFollowUpSlot({
+      await ensureFollowUpCanBeScheduled({
         ambulatorioId,
-        dataOraProssimaVisita: followUpScheduling.dataOraProssimaVisita
+        dataOraProssimaVisita: followUpScheduling.dataOraProssimaVisita,
+        options: input.followUpWriteOptions
       });
 
       pendingFollowUpCreation = {
         ambulatorioId,
         pazienteId,
         dataOraInizio: followUpScheduling.dataOraProssimaVisita,
-        motivo: followUpScheduling.motivoProssimaVisita
+        motivo: followUpScheduling.motivoProssimaVisita,
+        options: input.followUpWriteOptions
       };
     }
   }
@@ -170,11 +172,16 @@ export async function updateVisitaCompleta(input: {
     return;
   }
 
-  await createFollowUpAppuntamentoFromVisita({
+  const followUpCreation = await createFollowUpAppuntamentoFromVisita({
     visitaId,
     ambulatorioId: pendingFollowUpCreation.ambulatorioId,
     pazienteId: pendingFollowUpCreation.pazienteId,
     dataOraInizio: pendingFollowUpCreation.dataOraInizio,
-    motivo: pendingFollowUpCreation.motivo
+    motivo: pendingFollowUpCreation.motivo,
+    options: pendingFollowUpCreation.options
   });
+
+  if (!followUpCreation.saved && followUpCreation.requirements) {
+    throw new Error(buildConfirmationRequiredErrorMessage(followUpCreation.requirements));
+  }
 }

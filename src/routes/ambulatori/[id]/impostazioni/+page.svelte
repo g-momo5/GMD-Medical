@@ -6,7 +6,12 @@
   import { authStore } from '$lib/stores/auth';
   import { sidebarCollapsedStore } from '$lib/stores/sidebar';
   import { toastStore } from '$lib/stores/toast';
-  import { updateAmbulatorio, getAmbulatorioById } from '$lib/db/ambulatori';
+  import {
+    getAmbulatorioById,
+    getAmbulatorioOperatingSettingsById,
+    updateAmbulatorio,
+    updateAmbulatorioOperatingSettings
+  } from '$lib/db/ambulatori';
   import { getAllUsers, createUser, updateUser, deleteUser, verifyUserPassword, updateUserPassword } from '$lib/db/auth';
   import Card from '$lib/components/Card.svelte';
   import Modal from '$lib/components/Modal.svelte';
@@ -15,7 +20,7 @@
   import UserFormModal from '$lib/components/UserFormModal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Icon from '$lib/components/Icon.svelte';
-  import type { User } from '$lib/db/types';
+  import type { User, UpsertAmbulatorioOperatingWindowInput } from '$lib/db/types';
   import {
     getDefaultDatabaseDirectory,
     getRuntimeDatabaseDirectory,
@@ -33,6 +38,7 @@
   $: ambulatorio = $ambulatorioStore.current;
   $: user = $authStore.user;
   $: isAdmin = user?.role === 'admin';
+  $: canEditOperatingSettings = user?.role === 'admin' || user?.role === 'medico';
 
   let activeTab: 'ambulatorio' | 'utenti' | 'backup' | 'integrazioni' | 'sistema' = 'ambulatorio';
   let saving = false;
@@ -53,6 +59,18 @@
   let runtimeDatabaseUrl = '';
   let loadingDatabaseSettings = true;
   let switchingDatabaseDirectory = false;
+  let loadingOperatingSettings = true;
+  let savingOperatingSettings = false;
+  let minVisitDurationMinutes = 10;
+  let standardVisitDurationMinutes = 15;
+  let operatingWindowsForm: Array<{
+    uiId: string;
+    weekday: number;
+    ora_inizio: string;
+    ora_fine: string;
+    max_pazienti_giorno: number;
+  }> = [];
+  let operatingSettingsLoadedForAmbulatorioId = 0;
 
   // Dati form ambulatorio
   let formData = {
@@ -66,6 +84,30 @@
     color_accent: '#22d3ee'
   };
 
+  const weekdayOptions = [
+    { value: 1, label: 'Lunedì' },
+    { value: 2, label: 'Martedì' },
+    { value: 3, label: 'Mercoledì' },
+    { value: 4, label: 'Giovedì' },
+    { value: 5, label: 'Venerdì' },
+    { value: 6, label: 'Sabato' },
+    { value: 7, label: 'Domenica' }
+  ];
+
+  function createOperatingWindowUiId(): string {
+    return `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  }
+
+  function getDefaultMaxPatientsForWeekday(weekday: number): number {
+    if (weekday === 1) {
+      return 15;
+    }
+    if (weekday === 4) {
+      return 25;
+    }
+    return 25;
+  }
+
   $: if (ambulatorio) {
     formData.nome = ambulatorio.nome;
     formData.logo_path = ambulatorio.logo_path || '';
@@ -75,6 +117,11 @@
     formData.indirizzo = ambulatorio.indirizzo || '';
     formData.telefono = ambulatorio.telefono || '';
     formData.email = ambulatorio.email || '';
+  }
+
+  $: if (ambulatorio?.id && ambulatorio.id !== operatingSettingsLoadedForAmbulatorioId) {
+    operatingSettingsLoadedForAmbulatorioId = ambulatorio.id;
+    void loadOperatingSettingsForAmbulatorio(ambulatorio.id);
   }
 
   async function handleSaveAmbulatorio() {
@@ -109,6 +156,88 @@
       toastStore.show('error', 'Errore durante il salvataggio delle impostazioni');
     } finally {
       saving = false;
+    }
+  }
+
+  async function loadOperatingSettingsForAmbulatorio(ambulatorioId: number): Promise<void> {
+    loadingOperatingSettings = true;
+    try {
+      const settings = await getAmbulatorioOperatingSettingsById(ambulatorioId);
+      minVisitDurationMinutes = settings.durataMinimaVisitaMinuti;
+      standardVisitDurationMinutes = settings.durataStandardVisitaMinuti;
+      operatingWindowsForm = settings.windows.map((window) => ({
+        uiId: createOperatingWindowUiId(),
+        weekday: window.weekday,
+        ora_inizio: window.ora_inizio,
+        ora_fine: window.ora_fine,
+        max_pazienti_giorno: Math.max(1, Number(window.max_pazienti_giorno || getDefaultMaxPatientsForWeekday(window.weekday)))
+      }));
+    } catch (error) {
+      console.error('Errore caricamento orari ambulatorio:', error);
+      toastStore.show('error', `Errore caricamento orari ambulatorio: ${getErrorMessage(error)}`);
+      minVisitDurationMinutes = 10;
+      standardVisitDurationMinutes = 15;
+      operatingWindowsForm = [];
+    } finally {
+      loadingOperatingSettings = false;
+    }
+  }
+
+  function addOperatingWindowRow(): void {
+    operatingWindowsForm = [
+      ...operatingWindowsForm,
+      {
+        uiId: createOperatingWindowUiId(),
+        weekday: 1,
+        ora_inizio: '08:00',
+        ora_fine: '08:30',
+        max_pazienti_giorno: getDefaultMaxPatientsForWeekday(1)
+      }
+    ];
+  }
+
+  function removeOperatingWindowRow(uiId: string): void {
+    operatingWindowsForm = operatingWindowsForm.filter((window) => window.uiId !== uiId);
+  }
+
+  async function handleSaveOperatingSettings(): Promise<void> {
+    if (!ambulatorio) {
+      return;
+    }
+
+    if (!canEditOperatingSettings) {
+      toastStore.show('error', 'Solo amministratori e medici possono modificare gli orari');
+      return;
+    }
+
+    const payloadWindows: UpsertAmbulatorioOperatingWindowInput[] = operatingWindowsForm.map((window) => ({
+      weekday: window.weekday as UpsertAmbulatorioOperatingWindowInput['weekday'],
+      ora_inizio: window.ora_inizio,
+      ora_fine: window.ora_fine,
+      max_pazienti_giorno: Math.max(1, Math.floor(Number(window.max_pazienti_giorno || 0)))
+    }));
+
+    savingOperatingSettings = true;
+    try {
+      await updateAmbulatorioOperatingSettings({
+        ambulatorioId: ambulatorio.id,
+        durataMinimaVisitaMinuti: Math.floor(Number(minVisitDurationMinutes || 0)),
+        durataStandardVisitaMinuti: Math.floor(Number(standardVisitDurationMinutes || 0)),
+        windows: payloadWindows
+      });
+
+      const updated = await getAmbulatorioById(ambulatorio.id);
+      if (updated) {
+        ambulatorioStore.select(updated);
+      }
+
+      await loadOperatingSettingsForAmbulatorio(ambulatorio.id);
+      toastStore.show('success', 'Orari ambulatorio aggiornati con successo');
+    } catch (error) {
+      console.error('Errore salvataggio orari ambulatorio:', error);
+      toastStore.show('error', `Errore salvataggio orari ambulatorio: ${getErrorMessage(error)}`);
+    } finally {
+      savingOperatingSettings = false;
     }
   }
 
@@ -572,6 +701,147 @@
             </button>
           </div>
         </form>
+
+        <div class="operating-settings-card">
+          <div class="operating-settings-header">
+            <h3>Orari di Funzionamento Ambulatorio</h3>
+            <p>
+              Configura giorni, fasce orarie, durata minima e durata standard visita per questo ambulatorio.
+            </p>
+          </div>
+
+          {#if loadingOperatingSettings}
+            <div class="loading-state">Caricamento orari ambulatorio...</div>
+          {:else}
+            {#if !canEditOperatingSettings}
+              <p class="operating-settings-readonly">
+                Solo amministratori e medici possono modificare giorni e orari di funzionamento.
+              </p>
+            {/if}
+
+            <div class="operating-settings-grid">
+              <div class="form-group">
+                <label for="minVisitDurationMinutes">Durata minima visita (minuti)</label>
+                <input
+                  id="minVisitDurationMinutes"
+                  type="number"
+                  class="common-field"
+                  min="10"
+                  step="1"
+                  bind:value={minVisitDurationMinutes}
+                  disabled={!canEditOperatingSettings || savingOperatingSettings}
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="standardVisitDurationMinutes">Durata standard visita (minuti)</label>
+                <input
+                  id="standardVisitDurationMinutes"
+                  type="number"
+                  class="common-field"
+                  min="10"
+                  step="1"
+                  bind:value={standardVisitDurationMinutes}
+                  disabled={!canEditOperatingSettings || savingOperatingSettings}
+                />
+                <small class="operating-settings-help">
+                  La durata standard viene usata per nuovi appuntamenti e follow-up. Deve essere maggiore o uguale alla durata minima.
+                </small>
+              </div>
+            </div>
+
+            <div class="operating-window-list">
+              {#if operatingWindowsForm.length === 0}
+                <p class="operating-window-empty">Nessuna fascia oraria configurata.</p>
+              {:else}
+                {#each operatingWindowsForm as window (window.uiId)}
+                  <div class="operating-window-row">
+                    <div class="form-group">
+                      <label for={`weekday-${window.uiId}`}>Giorno</label>
+                      <select
+                        id={`weekday-${window.uiId}`}
+                        class="common-field"
+                        bind:value={window.weekday}
+                        disabled={!canEditOperatingSettings || savingOperatingSettings}
+                      >
+                        {#each weekdayOptions as option}
+                          <option value={option.value}>{option.label}</option>
+                        {/each}
+                      </select>
+                    </div>
+
+                    <div class="form-group">
+                      <label for={`start-${window.uiId}`}>Inizio</label>
+                      <input
+                        id={`start-${window.uiId}`}
+                        type="time"
+                        class="common-field"
+                        bind:value={window.ora_inizio}
+                        disabled={!canEditOperatingSettings || savingOperatingSettings}
+                      />
+                    </div>
+
+                    <div class="form-group">
+                      <label for={`end-${window.uiId}`}>Fine</label>
+                      <input
+                        id={`end-${window.uiId}`}
+                        type="time"
+                        class="common-field"
+                        bind:value={window.ora_fine}
+                        disabled={!canEditOperatingSettings || savingOperatingSettings}
+                      />
+                    </div>
+
+                    <div class="form-group">
+                      <label for={`max-patients-${window.uiId}`}>Max pazienti/giorno</label>
+                      <input
+                        id={`max-patients-${window.uiId}`}
+                        type="number"
+                        class="common-field"
+                        min="1"
+                        step="1"
+                        bind:value={window.max_pazienti_giorno}
+                        disabled={!canEditOperatingSettings || savingOperatingSettings}
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      class="btn-icon btn-operating-remove"
+                      on:click={() => removeOperatingWindowRow(window.uiId)}
+                      title="Rimuovi fascia oraria"
+                      disabled={!canEditOperatingSettings || savingOperatingSettings}
+                    >
+                      <Icon name="trash" size={16} />
+                    </button>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+
+            <div class="operating-settings-actions">
+              <button
+                type="button"
+                class="btn-secondary btn-with-icon"
+                on:click={addOperatingWindowRow}
+                disabled={!canEditOperatingSettings || savingOperatingSettings}
+              >
+                <Icon name="calendar-plus" size={18} />
+                <span>Aggiungi Giorno/Fascia</span>
+              </button>
+
+              <button
+                type="button"
+                class="btn-primary btn-with-icon"
+                on:click={handleSaveOperatingSettings}
+                disabled={!canEditOperatingSettings || savingOperatingSettings}
+              >
+                <Icon name="save" size={18} />
+                <span>{savingOperatingSettings ? 'Salvataggio...' : 'Salva Orari'}</span>
+              </button>
+            </div>
+          {/if}
+        </div>
       </Card>
     {:else if activeTab === 'utenti'}
       {#if isAdmin}
@@ -1095,6 +1365,39 @@
     color: var(--color-text);
   }
 
+  .common-field {
+    width: 100%;
+    height: 34px;
+    padding: var(--space-1) var(--space-4);
+    font-size: var(--text-base);
+    font-family: var(--font-sans);
+    color: var(--color-text);
+    background-color: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    transition: all var(--transition-fast);
+    box-sizing: border-box;
+    -webkit-box-sizing: border-box;
+    -moz-box-sizing: border-box;
+  }
+
+  select.common-field {
+    appearance: none;
+    cursor: pointer;
+  }
+
+  .common-field:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.1);
+  }
+
+  .common-field:disabled {
+    background-color: var(--color-bg-secondary);
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+
   .form-group-title {
     margin: 0;
     font-size: var(--text-sm);
@@ -1167,6 +1470,79 @@
     justify-content: flex-end;
     padding-top: var(--space-4);
     border-top: 1px solid var(--color-border);
+  }
+
+  .operating-settings-card {
+    margin-top: var(--space-8);
+    padding-top: var(--space-6);
+    border-top: 1px solid var(--color-border);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .operating-settings-header h3 {
+    margin: 0;
+    font-size: var(--text-lg);
+    color: var(--color-text);
+  }
+
+  .operating-settings-header p {
+    margin: var(--space-2) 0 0 0;
+    color: var(--color-text-secondary);
+    font-size: var(--text-sm);
+  }
+
+  .operating-settings-readonly {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: var(--text-sm);
+  }
+
+  .operating-settings-grid {
+    display: grid;
+    grid-template-columns: minmax(220px, 320px);
+    gap: var(--space-4);
+  }
+
+  .operating-settings-help {
+    margin-top: 4px;
+    color: var(--color-text-secondary);
+    font-size: var(--text-xs);
+    line-height: 1.4;
+  }
+
+  .operating-window-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .operating-window-empty {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: var(--text-sm);
+  }
+
+  .operating-window-row {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr 1fr 1fr auto;
+    gap: var(--space-3);
+    align-items: end;
+    padding: var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-secondary);
+  }
+
+  .btn-operating-remove {
+    align-self: center;
+  }
+
+  .operating-settings-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
   }
 
   .report-settings {
@@ -1696,6 +2072,20 @@
 
     .report-actions .btn-primary,
     .report-actions .btn-secondary {
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    .operating-window-row {
+      grid-template-columns: 1fr;
+    }
+
+    .operating-settings-actions {
+      flex-direction: column;
+    }
+
+    .operating-settings-actions .btn-primary,
+    .operating-settings-actions .btn-secondary {
       width: 100%;
       justify-content: flex-start;
     }

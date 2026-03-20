@@ -1,11 +1,14 @@
 <script lang="ts">
-  import type { PianificazioneFollowUp } from '$lib/db/types';
+  import { getSlotDisponibilitaByDay } from '$lib/db/appuntamenti';
+  import type { AppuntamentoSlotDisponibilita, PianificazioneFollowUp } from '$lib/db/types';
   import { createEmptyPianificazioneFollowUp } from '$lib/utils/visit-clinical';
   import Card from '../Card.svelte';
+  import Icon from '../Icon.svelte';
   import RichTextarea from '../RichTextarea.svelte';
 
   export let conclusioni = '';
   export let pianificazioneFollowUp: PianificazioneFollowUp = createEmptyPianificazioneFollowUp();
+  export let ambulatorioId: number | null = null;
 
   type FollowUpSegment = 'day' | 'month' | 'year' | 'hour' | 'minute';
 
@@ -26,12 +29,18 @@
   let followUpYear = '';
   let followUpHour = '';
   let followUpMinute = '';
+  let followUpDateForSlots = '';
+  let selectedFollowUpTime = '';
   let followUpDayInput: HTMLInputElement | undefined;
   let followUpMonthInput: HTMLInputElement | undefined;
   let followUpYearInput: HTMLInputElement | undefined;
   let followUpHourInput: HTMLInputElement | undefined;
   let followUpMinuteInput: HTMLInputElement | undefined;
   let lastSyncedFollowUpValue: string | null = null;
+  let slotLookupKey = '';
+  let loadingSlotDisponibilita = false;
+  let slotDisponibilita: AppuntamentoSlotDisponibilita[] = [];
+  let slotDisponibilitaError = '';
 
   // Stato dei pulsanti di formattazione
   let isBoldActive = false;
@@ -46,6 +55,19 @@
   $: if (pianificazioneFollowUp.dataOraProssimaVisita !== lastSyncedFollowUpValue) {
     syncFollowUpSegments(pianificazioneFollowUp.dataOraProssimaVisita);
     lastSyncedFollowUpValue = pianificazioneFollowUp.dataOraProssimaVisita;
+  }
+  $: followUpDateForSlots = buildFollowUpDateOnlyValue();
+  $: selectedFollowUpTime = resolveFollowUpTime(pianificazioneFollowUp.dataOraProssimaVisita);
+  $: {
+    const nextLookupKey =
+      ambulatorioId && followUpDateForSlots
+        ? `${ambulatorioId}:${followUpDateForSlots}`
+        : '';
+
+    if (slotLookupKey !== nextLookupKey) {
+      slotLookupKey = nextLookupKey;
+      void loadSlotDisponibilita(nextLookupKey, followUpDateForSlots);
+    }
   }
 
   // Aggiorna lo stato dei pulsanti in base alla posizione del cursore
@@ -528,6 +550,43 @@
     return `${followUpYear}-${followUpMonth}-${followUpDay}T${followUpHour}:${followUpMinute}`;
   }
 
+  function buildFollowUpDateOnlyValue(): string {
+    if (
+      followUpDay.length !== followUpSegmentLengths.day ||
+      followUpMonth.length !== followUpSegmentLengths.month ||
+      followUpYear.length !== followUpSegmentLengths.year
+    ) {
+      return '';
+    }
+
+    const day = Number(followUpDay);
+    const month = Number(followUpMonth);
+    const year = Number(followUpYear);
+
+    if (
+      Number.isNaN(day) ||
+      Number.isNaN(month) ||
+      Number.isNaN(year) ||
+      day < 1 ||
+      month < 1 ||
+      month > 12
+    ) {
+      return '';
+    }
+
+    const date = new Date(year, month - 1, day);
+    const isValidDate =
+      date.getFullYear() === year &&
+      date.getMonth() === month - 1 &&
+      date.getDate() === day;
+
+    if (!isValidDate) {
+      return '';
+    }
+
+    return `${followUpYear}-${followUpMonth}-${followUpDay}`;
+  }
+
   function syncFollowUpDateTimeValue() {
     const nextValue = buildFollowUpDateTimeValue();
     if (nextValue === pianificazioneFollowUp.dataOraProssimaVisita) return;
@@ -584,6 +643,70 @@
       [field]: value
     };
   }
+
+  function resolveFollowUpTime(value: string): string {
+    const match = value.match(/^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})/);
+    if (!match) {
+      return '';
+    }
+
+    return `${match[1]}:${match[2]}`;
+  }
+
+  async function loadSlotDisponibilita(requestKey: string, day: string): Promise<void> {
+    if (!requestKey || !ambulatorioId || !day) {
+      slotDisponibilita = [];
+      slotDisponibilitaError = '';
+      loadingSlotDisponibilita = false;
+      return;
+    }
+
+    loadingSlotDisponibilita = true;
+    slotDisponibilitaError = '';
+
+    try {
+      const slots = await getSlotDisponibilitaByDay({
+        ambulatorioId,
+        day
+      });
+
+      if (requestKey !== slotLookupKey) {
+        return;
+      }
+
+      slotDisponibilita = slots;
+    } catch (error) {
+      if (requestKey !== slotLookupKey) {
+        return;
+      }
+
+      slotDisponibilita = [];
+      slotDisponibilitaError =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Errore caricamento disponibilità slot';
+    } finally {
+      if (requestKey === slotLookupKey) {
+        loadingSlotDisponibilita = false;
+      }
+    }
+  }
+
+  function handleSlotClick(slot: AppuntamentoSlotDisponibilita): void {
+    if (!slot.available) {
+      return;
+    }
+
+    const [hours, minutes] = slot.time.split(':');
+    if (!hours || !minutes) {
+      return;
+    }
+
+    followUpHour = hours;
+    followUpMinute = minutes;
+    syncFollowUpDateTimeValue();
+    focusFollowUpSegment('minute');
+  }
 </script>
 
 <Card>
@@ -592,43 +715,23 @@
   <div class="anamnesi-content">
     <div class="toolbar">
       <button type="button" class="toolbar-btn toolbar-btn-icon" class:active={isBoldActive} on:click={() => formatText('bold')} title="Grassetto (** **)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M4 2h5a3.5 3.5 0 0 1 2.5 6A3.5 3.5 0 0 1 9 14H4V2zm1.5 1.5v4h3.5a2 2 0 1 0 0-4h-3.5zm0 5.5v4H9a2 2 0 1 0 0-4H5.5z"/>
-        </svg>
+        <Icon name="bold" size={16} />
       </button>
       <button type="button" class="toolbar-btn toolbar-btn-icon" class:active={isItalicActive} on:click={() => formatText('italic')} title="Corsivo (* *)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M7.5 2h5v1.5h-1.8l-2.4 9h1.7V14h-5v-1.5h1.8l2.4-9H7.5V2z"/>
-        </svg>
+        <Icon name="italic" size={16} />
       </button>
       <button type="button" class="toolbar-btn toolbar-btn-icon" class:active={isUnderlineActive} on:click={() => formatText('underline')} title="Sottolineato (__ __)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M8 13c-2.5 0-4-1.5-4-4V2h1.5v7c0 1.7.8 2.5 2.5 2.5s2.5-.8 2.5-2.5V2H12v7c0 2.5-1.5 4-4 4zM3 14h10v1H3v-1z"/>
-        </svg>
+        <Icon name="underline" size={16} />
       </button>
 
       <div class="toolbar-divider"></div>
 
       <button type="button" class="toolbar-btn" on:click={addBulletPoint} title="Aggiungi punto elenco (-)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <rect x="2" y="3" width="2" height="2" rx="0.5"/>
-          <rect x="6" y="3" width="8" height="2" rx="0.5"/>
-          <rect x="2" y="7" width="2" height="2" rx="0.5"/>
-          <rect x="6" y="7" width="8" height="2" rx="0.5"/>
-          <rect x="2" y="11" width="2" height="2" rx="0.5"/>
-          <rect x="6" y="11" width="8" height="2" rx="0.5"/>
-        </svg>
+        <Icon name="list" size={16} />
         <span>Elenco (-)</span>
       </button>
       <button type="button" class="toolbar-btn" on:click={addCircleBullet} title="Aggiungi punto elenco (•)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <circle cx="3" cy="4" r="1.5"/>
-          <rect x="6" y="3" width="8" height="2" rx="0.5"/>
-          <circle cx="3" cy="8" r="1.5"/>
-          <rect x="6" y="7" width="8" height="2" rx="0.5"/>
-          <circle cx="3" cy="12" r="1.5"/>
-          <rect x="6" y="11" width="8" height="2" rx="0.5"/>
-        </svg>
+        <Icon name="list-ordered" size={16} />
         <span>Elenco (•)</span>
       </button>
 
@@ -736,6 +839,39 @@
                 on:keydown={(event) => handleFollowUpSegmentKeyDown('minute', event)}
               />
             </div>
+          </div>
+
+          <div class="follow-up-slots">
+            <div class="follow-up-slots-title">Slot disponibili (08:00-20:00, ogni 30 minuti)</div>
+
+            {#if !followUpDateForSlots}
+              <p class="follow-up-slots-hint">Completa la data per vedere gli slot liberi.</p>
+            {:else if loadingSlotDisponibilita}
+              <p class="follow-up-slots-hint">Caricamento disponibilità...</p>
+            {:else if slotDisponibilitaError}
+              <p class="follow-up-slots-error">{slotDisponibilitaError}</p>
+            {:else}
+              <div class="follow-up-slots-grid">
+                {#each slotDisponibilita as slot}
+                  <button
+                    type="button"
+                    class="follow-up-slot-btn"
+                    class:available={slot.available}
+                    class:occupied={!slot.available}
+                    class:selected={slot.available && selectedFollowUpTime === slot.time}
+                    disabled={!slot.available}
+                    on:click={() => handleSlotClick(slot)}
+                    title={slot.available
+                      ? `Seleziona ${slot.time}`
+                      : `Occupato${slot.appuntamento
+                        ? `: ${slot.appuntamento.paziente_cognome || ''} ${slot.appuntamento.paziente_nome || ''}`.trim()
+                        : ''}`}
+                  >
+                    {slot.time}
+                  </button>
+                {/each}
+              </div>
+            {/if}
           </div>
         </div>
 
@@ -959,6 +1095,74 @@
     line-height: 1.5;
   }
 
+  .follow-up-slots {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-top: var(--space-1);
+  }
+
+  .follow-up-slots-title {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  .follow-up-slots-hint {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--color-text-secondary);
+  }
+
+  .follow-up-slots-error {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--color-error);
+  }
+
+  .follow-up-slots-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: var(--space-1);
+  }
+
+  .follow-up-slot-btn {
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-primary);
+    color: var(--color-text-secondary);
+    border-radius: var(--radius-sm);
+    padding: 4px 6px;
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .follow-up-slot-btn.available {
+    color: var(--color-success);
+    border-color: color-mix(in srgb, var(--color-success) 45%, transparent);
+  }
+
+  .follow-up-slot-btn.available:hover {
+    background: color-mix(in srgb, var(--color-success) 12%, var(--color-bg-primary));
+  }
+
+  .follow-up-slot-btn.selected {
+    background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-primary));
+    border-color: color-mix(in srgb, var(--color-primary) 60%, transparent);
+    color: var(--color-primary);
+    font-weight: 600;
+  }
+
+  .follow-up-slot-btn.occupied {
+    color: var(--color-text-tertiary);
+    background: var(--color-bg-secondary);
+    opacity: 0.7;
+    cursor: not-allowed;
+  }
+
   @media (max-width: 768px) {
     .toolbar {
       flex-wrap: wrap;
@@ -977,6 +1181,10 @@
     .follow-up-datetime {
       flex-direction: column;
       align-items: flex-start;
+    }
+
+    .follow-up-slots-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
     }
   }
 </style>

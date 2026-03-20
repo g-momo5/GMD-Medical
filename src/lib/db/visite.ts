@@ -28,27 +28,88 @@ const esameEmaticoKeys: EsameEmaticoKey[] = [
   'cpk'
 ];
 
-function parseEsamiForHistory(raw?: string | null): Record<EsameEmaticoKey, string> {
-  const values = Object.fromEntries(esameEmaticoKeys.map((key) => [key, ''])) as Record<
-    EsameEmaticoKey,
-    string
-  >;
+interface ParsedEsamiHistoryRow {
+  values: Record<EsameEmaticoKey, string>;
+  examDate: string;
+  examDateComparable: string | null;
+}
+
+function normalizeExamDateForComparison(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const match = trimmed.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/
+  );
+  if (match) {
+    const year = match[1];
+    const month = match[2];
+    const day = match[3];
+    const hour = match[4] ?? '00';
+    const minute = match[5] ?? '00';
+    const second = match[6] ?? '00';
+    return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const yyyy = parsed.getFullYear();
+  const mm = String(parsed.getMonth() + 1).padStart(2, '0');
+  const dd = String(parsed.getDate()).padStart(2, '0');
+  const hh = String(parsed.getHours()).padStart(2, '0');
+  const mi = String(parsed.getMinutes()).padStart(2, '0');
+  const ss = String(parsed.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}`;
+}
+
+function parseEsamiForHistory(
+  raw: string | null | undefined,
+  fallbackVisitDate: string
+): ParsedEsamiHistoryRow {
+  const values = Object.fromEntries(esameEmaticoKeys.map((key) => [key, ''])) as Record<EsameEmaticoKey, string>;
+  const fallbackDate = typeof fallbackVisitDate === 'string' ? fallbackVisitDate.trim() : '';
+  let examDate = fallbackDate;
 
   if (!raw) {
-    return values;
+    return {
+      values,
+      examDate,
+      examDateComparable: normalizeExamDateForComparison(examDate)
+    };
   }
 
   try {
-    const parsed = JSON.parse(raw) as Partial<Record<EsameEmaticoKey, unknown>>;
+    const parsed = JSON.parse(raw) as Partial<Record<EsameEmaticoKey | 'data_ee', unknown>>;
     for (const key of esameEmaticoKeys) {
       const value = parsed[key];
       values[key] = typeof value === 'string' ? value.trim() : '';
     }
+    const dataEe = parsed.data_ee;
+    if (typeof dataEe === 'string' && dataEe.trim()) {
+      examDate = dataEe.trim();
+    }
   } catch {
-    return values;
+    return {
+      values,
+      examDate,
+      examDateComparable: normalizeExamDateForComparison(examDate)
+    };
   }
 
-  return values;
+  return {
+    values,
+    examDate,
+    examDateComparable: normalizeExamDateForComparison(examDate)
+  };
 }
 
 function normalizeIntegerForWrite(value: number | string | null | undefined): number | null {
@@ -240,38 +301,77 @@ export async function getPreviousEsamiEmaticiByPaziente(params: {
     sql += ' AND id != ?';
   }
 
-  if (params.beforeDate) {
-    queryParams.push(params.beforeDate);
-    const operator = params.excludeVisitaId !== undefined ? '<=' : '<';
-    sql += ` AND data_visita ${operator} ?`;
-  }
-
-  sql += ' ORDER BY data_visita DESC, id DESC';
+  sql += ' ORDER BY id DESC';
 
   const rows = await db.select<Array<{ id: number; data_visita: string; esami_ematici: string | null }>>(
     sql,
     queryParams
   );
+  const normalizedBeforeDate = normalizeExamDateForComparison(params.beforeDate);
+  const isDateOnlyFilter = /^\d{4}-\d{2}-\d{2}$/.test(params.beforeDate.trim());
+  const includeSameDateTime = params.excludeVisitaId !== undefined;
+
+  const orderedRows = rows
+    .map((row) => {
+      const parsed = parseEsamiForHistory(row.esami_ematici, row.data_visita);
+      const comparableDate = parsed.examDateComparable || normalizeExamDateForComparison(row.data_visita);
+      const timestamp = comparableDate ? new Date(comparableDate).getTime() : Number.NaN;
+      return {
+        ...row,
+        parsed,
+        comparableDate,
+        timestamp
+      };
+    })
+    .filter((row) => {
+      if (!row.comparableDate) {
+        return false;
+      }
+
+      if (!normalizedBeforeDate) {
+        return true;
+      }
+
+      if (isDateOnlyFilter) {
+        return row.comparableDate.slice(0, 10) <= normalizedBeforeDate.slice(0, 10);
+      }
+
+      const beforeTimestamp = new Date(normalizedBeforeDate).getTime();
+      if (!Number.isFinite(beforeTimestamp) || !Number.isFinite(row.timestamp)) {
+        return false;
+      }
+
+      return includeSameDateTime ? row.timestamp <= beforeTimestamp : row.timestamp < beforeTimestamp;
+    })
+    .sort((left, right) => {
+      const leftTs = Number.isFinite(left.timestamp) ? left.timestamp : Number.NEGATIVE_INFINITY;
+      const rightTs = Number.isFinite(right.timestamp) ? right.timestamp : Number.NEGATIVE_INFINITY;
+      if (leftTs !== rightTs) {
+        return rightTs - leftTs;
+      }
+      return right.id - left.id;
+    });
 
   const result: PreviousEsamiEmaticiMap = {};
   const remainingKeys = new Set(esameEmaticoKeys);
 
-  for (const row of rows) {
-    const parsed = parseEsamiForHistory(row.esami_ematici);
+  for (const row of orderedRows) {
+    const parsedValues = row.parsed.values;
+    const referenceDate = row.parsed.examDate || row.data_visita;
 
     for (const key of esameEmaticoKeys) {
       if (!remainingKeys.has(key)) {
         continue;
       }
 
-      const value = parsed[key];
+      const value = parsedValues[key];
       if (!value) {
         continue;
       }
 
       result[key] = {
         value,
-        date: row.data_visita
+        date: referenceDate
       };
       remainingKeys.delete(key);
     }

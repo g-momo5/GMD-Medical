@@ -14,7 +14,15 @@
   import Input from '$lib/components/Input.svelte';
   import UserFormModal from '$lib/components/UserFormModal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
+  import Icon from '$lib/components/Icon.svelte';
   import type { User } from '$lib/db/types';
+  import {
+    getDefaultDatabaseDirectory,
+    getRuntimeDatabaseDirectory,
+    getRuntimeDatabasePath,
+    getRuntimeDatabaseUrl
+  } from '$lib/db/config';
+  import { switchDatabaseDirectory } from '$lib/db/database-switch';
   import {
     clearReportBaseDirectory,
     getDefaultReportBaseDirectory,
@@ -39,6 +47,12 @@
   let reportBaseDirectory = '';
   let defaultReportBaseDirectory = '';
   let loadingReportSettings = true;
+  let databaseDirectory = '';
+  let defaultDatabaseDirectory = '';
+  let runtimeDatabasePath = '';
+  let runtimeDatabaseUrl = '';
+  let loadingDatabaseSettings = true;
+  let switchingDatabaseDirectory = false;
 
   // Dati form ambulatorio
   let formData = {
@@ -196,9 +210,37 @@
     loadUsers();
   }
 
+  function getErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+
+    if (typeof error === 'string' && error.trim()) {
+      return error;
+    }
+
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== '{}') {
+        return serialized;
+      }
+    } catch {
+      // ignore JSON serialization failures
+    }
+
+    return 'Errore sconosciuto';
+  }
+
   onMount(() => {
-    loadReportSettings();
+    loadSystemSettings();
   });
+
+  async function loadSystemSettings() {
+    await Promise.all([
+      loadReportSettings(),
+      loadDatabaseSettings()
+    ]);
+  }
 
   async function loadReportSettings() {
     loadingReportSettings = true;
@@ -210,6 +252,21 @@
       toastStore.show('error', 'Errore durante il caricamento della cartella referti');
     } finally {
       loadingReportSettings = false;
+    }
+  }
+
+  async function loadDatabaseSettings() {
+    loadingDatabaseSettings = true;
+    try {
+      defaultDatabaseDirectory = await getDefaultDatabaseDirectory();
+      databaseDirectory = await getRuntimeDatabaseDirectory();
+      runtimeDatabasePath = await getRuntimeDatabasePath();
+      runtimeDatabaseUrl = await getRuntimeDatabaseUrl();
+    } catch (error) {
+      console.error('Errore caricamento impostazioni database:', error);
+      toastStore.show('error', 'Errore durante il caricamento della cartella database');
+    } finally {
+      loadingDatabaseSettings = false;
     }
   }
 
@@ -235,6 +292,30 @@
     }
   }
 
+  async function handleChooseDatabaseDirectory() {
+    if (!isAdmin || switchingDatabaseDirectory) {
+      return;
+    }
+
+    try {
+      const selectedPath = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: databaseDirectory || defaultDatabaseDirectory,
+        title: 'Seleziona cartella database'
+      });
+
+      if (typeof selectedPath !== 'string' || !selectedPath.trim()) {
+        return;
+      }
+
+      databaseDirectory = selectedPath.trim();
+    } catch (error) {
+      console.error('Errore selezione cartella database:', error);
+      toastStore.show('error', 'Errore durante la selezione della cartella database');
+    }
+  }
+
   function handleSaveReportDirectory() {
     if (!reportBaseDirectory.trim()) {
       toastStore.show('error', 'Inserisci un percorso valido per la cartella referti');
@@ -250,6 +331,81 @@
     clearReportBaseDirectory();
     reportBaseDirectory = defaultReportBaseDirectory;
     toastStore.show('success', 'Ripristinato il percorso predefinito dei referti');
+  }
+
+  async function handleApplyDatabaseDirectory() {
+    if (!isAdmin) {
+      toastStore.show('error', 'Solo gli amministratori possono cambiare la cartella database');
+      return;
+    }
+
+    const nextDirectory = databaseDirectory.trim();
+    if (!nextDirectory) {
+      toastStore.show('error', 'Inserisci un percorso valido per la cartella database');
+      return;
+    }
+
+    switchingDatabaseDirectory = true;
+    try {
+      const result = await switchDatabaseDirectory(nextDirectory);
+      await loadDatabaseSettings();
+
+      if (!result.changed) {
+        toastStore.show('info', 'La cartella database selezionata è già quella attiva');
+        return;
+      }
+
+      if (result.backupPath) {
+        toastStore.show('success', `Cartella database aggiornata. Backup creato: ${result.backupPath}`);
+      } else {
+        toastStore.show('success', 'Cartella database aggiornata con successo');
+      }
+    } catch (error) {
+      console.error('Errore cambio cartella database:', error);
+      toastStore.show('error', `Errore durante il cambio cartella database: ${getErrorMessage(error)}`);
+      await loadDatabaseSettings();
+    } finally {
+      switchingDatabaseDirectory = false;
+    }
+  }
+
+  async function handleResetDatabaseDirectory() {
+    if (!isAdmin) {
+      toastStore.show('error', 'Solo gli amministratori possono cambiare la cartella database');
+      return;
+    }
+
+    switchingDatabaseDirectory = true;
+    try {
+      const defaultDirectory = await getDefaultDatabaseDirectory();
+      const result = await switchDatabaseDirectory(defaultDirectory);
+      await loadDatabaseSettings();
+
+      if (!result.changed) {
+        toastStore.show('info', 'Il database sta già usando il percorso predefinito');
+        return;
+      }
+
+      if (result.backupPath) {
+        toastStore.show('success', `Ripristinato percorso predefinito database. Backup creato: ${result.backupPath}`);
+      } else {
+        toastStore.show('success', 'Ripristinato percorso predefinito database');
+      }
+    } catch (error) {
+      console.error('Errore ripristino cartella database:', error);
+      toastStore.show('error', `Errore durante il ripristino cartella database: ${getErrorMessage(error)}`);
+      await loadDatabaseSettings();
+    } finally {
+      switchingDatabaseDirectory = false;
+    }
+  }
+
+  function handleOpenDocumentationPlaceholder() {
+    toastStore.show('info', 'Documentazione non ancora disponibile in questa versione.');
+  }
+
+  function handleOpenIssueTrackerPlaceholder() {
+    toastStore.show('info', 'Issue tracker non ancora disponibile in questa versione.');
   }
 </script>
 
@@ -267,7 +423,10 @@
       class:active={activeTab === 'ambulatorio'}
       on:click={() => activeTab = 'ambulatorio'}
     >
-      🏥 Ambulatorio
+      <span class="tab-icon" aria-hidden="true">
+        <Icon name="building" size={18} />
+      </span>
+      <span class="tab-label">Ambulatorio</span>
     </button>
     <button
       class="tab"
@@ -276,28 +435,40 @@
       disabled={!isAdmin}
       title={!isAdmin ? 'Solo amministratori possono accedere a questa sezione' : ''}
     >
-      👤 Utenti
+      <span class="tab-icon" aria-hidden="true">
+        <Icon name="users" size={18} />
+      </span>
+      <span class="tab-label">Utenti</span>
     </button>
     <button
       class="tab"
       class:active={activeTab === 'integrazioni'}
       on:click={() => activeTab = 'integrazioni'}
     >
-      🔗 Integrazioni
+      <span class="tab-icon" aria-hidden="true">
+        <Icon name="link" size={18} />
+      </span>
+      <span class="tab-label">Integrazioni</span>
     </button>
     <button
       class="tab"
       class:active={activeTab === 'backup'}
       on:click={() => activeTab = 'backup'}
     >
-      💾 Backup
+      <span class="tab-icon" aria-hidden="true">
+        <Icon name="hard-drive" size={18} />
+      </span>
+      <span class="tab-label">Backup</span>
     </button>
     <button
       class="tab"
       class:active={activeTab === 'sistema'}
       on:click={() => activeTab = 'sistema'}
     >
-      🖥️ Sistema
+      <span class="tab-icon" aria-hidden="true">
+        <Icon name="settings" size={18} />
+      </span>
+      <span class="tab-label">Sistema</span>
     </button>
   </div>
 
@@ -342,21 +513,22 @@
           </div>
 
           <div class="form-group">
-            <label>Logo Ambulatorio</label>
+            <p class="form-group-title">Logo Ambulatorio</p>
             <div class="logo-upload">
               {#if formData.logo_path}
                 <img src={formData.logo_path} alt="Logo" class="logo-preview" />
               {:else}
                 <div class="logo-placeholder">Nessun logo</div>
               {/if}
-              <button type="button" class="btn-secondary">
-                📁 Carica Logo
+              <button type="button" class="btn-secondary btn-with-icon">
+                <Icon name="folder-open" size={18} />
+                <span>Carica Logo</span>
               </button>
             </div>
           </div>
 
           <div class="form-group">
-            <label>Colori Tema</label>
+            <p class="form-group-title">Colori Tema</p>
             <div class="color-row">
               <div class="color-input">
                 <label for="primary">Primario</label>
@@ -389,11 +561,13 @@
           </div>
 
           <div class="form-actions">
-            <button type="submit" class="btn-primary" disabled={saving}>
+            <button type="submit" class="btn-primary btn-with-icon" disabled={saving}>
               {#if saving}
-                ⏳ Salvataggio...
+                <Icon name="loader" size={18} className="icon-spin" />
+                <span>Salvataggio...</span>
               {:else}
-                💾 Salva Modifiche
+                <Icon name="save" size={18} />
+                <span>Salva Modifiche</span>
               {/if}
             </button>
           </div>
@@ -404,7 +578,10 @@
         <Card padding="lg">
           <div class="section-header">
             <h2 class="section-title">Gestione Utenti</h2>
-            <button class="btn-primary" on:click={handleNewUser}>➕ Nuovo Utente</button>
+            <button class="btn-primary btn-with-icon" on:click={handleNewUser}>
+              <Icon name="user-plus" size={18} />
+              <span>Nuovo Utente</span>
+            </button>
           </div>
 
           {#if loadingUsers}
@@ -452,7 +629,7 @@
                             on:click={() => handleEditUser(userItem)}
                             title="Modifica"
                           >
-                            ✏️
+                            <Icon name="pencil" size={16} />
                           </button>
                           <button
                             class="btn-icon"
@@ -460,7 +637,7 @@
                             disabled={userItem.id === user?.id}
                             title={userItem.id === user?.id ? 'Non puoi eliminare il tuo account' : 'Elimina'}
                           >
-                            🗑️
+                            <Icon name="trash" size={16} />
                           </button>
                         </div>
                       </td>
@@ -474,7 +651,9 @@
       {:else}
         <Card padding="lg">
           <div class="access-denied">
-            <div class="access-denied-icon">🔒</div>
+            <div class="access-denied-icon" aria-hidden="true">
+              <Icon name="lock" size={64} />
+            </div>
             <h2>Accesso Negato</h2>
             <p>Solo gli amministratori possono accedere alla gestione utenti.</p>
           </div>
@@ -487,7 +666,9 @@
         <div class="integrations-grid">
           <div class="integration-card disabled">
             <div class="integration-header">
-              <div class="integration-icon">🏥</div>
+              <div class="integration-icon" aria-hidden="true">
+                <Icon name="building" size={24} />
+              </div>
               <div class="integration-info">
                 <h3>Sistema Tessera Sanitaria</h3>
                 <p class="integration-description">Integrazione con il Sistema TS per la lettura e validazione delle tessere sanitarie</p>
@@ -500,7 +681,9 @@
 
           <div class="integration-card disabled">
             <div class="integration-header">
-              <div class="integration-icon">📋</div>
+              <div class="integration-icon" aria-hidden="true">
+                <Icon name="clipboard-list" size={24} />
+              </div>
               <div class="integration-info">
                 <h3>Prescrizioni Elettroniche (SAC)</h3>
                 <p class="integration-description">Sistema di Accoglienza Centralizzato per la gestione delle ricette elettroniche</p>
@@ -513,7 +696,9 @@
 
           <div class="integration-card disabled">
             <div class="integration-header">
-              <div class="integration-icon">🔬</div>
+              <div class="integration-icon" aria-hidden="true">
+                <Icon name="flask" size={24} />
+              </div>
               <div class="integration-info">
                 <h3>Laboratori</h3>
                 <p class="integration-description">Integrazione con laboratori esterni per l'invio e ricezione di referti</p>
@@ -526,7 +711,9 @@
 
           <div class="integration-card disabled">
             <div class="integration-header">
-              <div class="integration-icon">💊</div>
+              <div class="integration-icon" aria-hidden="true">
+                <Icon name="pill" size={24} />
+              </div>
               <div class="integration-info">
                 <h3>Farmacie</h3>
                 <p class="integration-description">Collegamento con il network delle farmacie per la distribuzione farmaci</p>
@@ -539,7 +726,9 @@
         </div>
 
         <div class="info-box">
-          <div class="info-icon">ℹ️</div>
+          <div class="info-icon" aria-hidden="true">
+            <Icon name="info" size={20} />
+          </div>
           <div>
             <p><strong>Funzionalità in sviluppo</strong></p>
             <p>Queste integrazioni saranno disponibili nelle prossime versioni del software.</p>
@@ -583,14 +772,17 @@
                 </p>
 
                 <div class="report-actions">
-                  <button type="button" class="btn-secondary" on:click={handleChooseReportDirectory}>
-                    📁 Scegli Cartella
+                  <button type="button" class="btn-secondary btn-with-icon" on:click={handleChooseReportDirectory}>
+                    <Icon name="folder-open" size={18} />
+                    <span>Scegli Cartella</span>
                   </button>
-                  <button type="button" class="btn-primary" on:click={handleSaveReportDirectory}>
-                    💾 Salva Percorso
+                  <button type="button" class="btn-primary btn-with-icon" on:click={handleSaveReportDirectory}>
+                    <Icon name="save" size={18} />
+                    <span>Salva Percorso</span>
                   </button>
-                  <button type="button" class="btn-secondary" on:click={handleResetReportDirectory}>
-                    ↺ Ripristina Predefinito
+                  <button type="button" class="btn-secondary btn-with-icon" on:click={handleResetReportDirectory}>
+                    <Icon name="rotate-ccw" size={18} />
+                    <span>Ripristina Predefinito</span>
                   </button>
                 </div>
               </div>
@@ -643,20 +835,83 @@
 
           <div class="info-section">
             <h3>Database</h3>
-            <div class="info-grid">
-              <div class="info-item">
-                <span class="info-label">Tipo</span>
-                <span class="info-value">SQLite Locale</span>
+            {#if loadingDatabaseSettings}
+              <div class="loading-state">Caricamento cartella database...</div>
+            {:else}
+              <div class="report-settings">
+                <Input
+                  id="databaseDirectory"
+                  type="text"
+                  label="Cartella database"
+                  bind:value={databaseDirectory}
+                  placeholder="Percorso assoluto della cartella database"
+                  disabled={!isAdmin || switchingDatabaseDirectory}
+                />
+
+                {#if !isAdmin}
+                  <p class="report-help">
+                    Solo gli amministratori possono modificare la cartella del database.
+                  </p>
+                {/if}
+
+                <p class="report-default-path">
+                  Percorso predefinito: <span>{defaultDatabaseDirectory}</span>
+                </p>
+
+                <div class="report-actions">
+                  <button
+                    type="button"
+                    class="btn-secondary btn-with-icon"
+                    on:click={handleChooseDatabaseDirectory}
+                    disabled={!isAdmin || switchingDatabaseDirectory}
+                  >
+                    <Icon name="folder-open" size={18} />
+                    <span>Scegli Cartella</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-primary btn-with-icon"
+                    on:click={handleApplyDatabaseDirectory}
+                    disabled={!isAdmin || switchingDatabaseDirectory}
+                  >
+                    <Icon name="save" size={18} />
+                    <span>{switchingDatabaseDirectory ? 'Applicazione in corso...' : 'Applica e Migra'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-secondary btn-with-icon"
+                    on:click={handleResetDatabaseDirectory}
+                    disabled={!isAdmin || switchingDatabaseDirectory}
+                  >
+                    <Icon name="rotate-ccw" size={18} />
+                    <span>Ripristina Predefinito</span>
+                  </button>
+                </div>
               </div>
-              <div class="info-item">
-                <span class="info-label">Percorso</span>
-                <span class="info-value">~/GMD/gmd.db</span>
+
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">Tipo</span>
+                  <span class="info-value">SQLite Locale</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">URL Runtime</span>
+                  <span class="info-value">{runtimeDatabaseUrl}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Percorso attivo</span>
+                  <span class="info-value">{runtimeDatabasePath}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Cartella attiva</span>
+                  <span class="info-value">{databaseDirectory}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Stato</span>
+                  <span class="status-badge status-active">Connesso</span>
+                </div>
               </div>
-              <div class="info-item">
-                <span class="info-label">Stato</span>
-                <span class="status-badge status-active">Connesso</span>
-              </div>
-            </div>
+            {/if}
           </div>
 
           <div class="info-section">
@@ -664,11 +919,15 @@
             <div class="info-grid">
               <div class="info-item full-width">
                 <span class="info-label">Documentazione</span>
-                <a href="#" class="info-link">Apri documentazione</a>
+                <button type="button" class="info-link info-link-button" on:click={handleOpenDocumentationPlaceholder}>
+                  Apri documentazione
+                </button>
               </div>
               <div class="info-item full-width">
                 <span class="info-label">Segnala un problema</span>
-                <a href="#" class="info-link">Apri issue tracker</a>
+                <button type="button" class="info-link info-link-button" on:click={handleOpenIssueTrackerPlaceholder}>
+                  Apri issue tracker
+                </button>
               </div>
               <div class="info-item full-width">
                 <span class="info-label">Licenza</span>
@@ -708,39 +967,86 @@
 <style>
   .impostazioni {
     padding: var(--space-8);
-    max-width: 1200px;
+    max-width: 1240px;
     margin: 0 auto;
   }
 
   .tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-2);
     margin-bottom: var(--space-6);
-    border-bottom: 2px solid var(--color-border);
+    padding: var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl);
+    background: linear-gradient(180deg, var(--color-bg-secondary), var(--color-bg));
   }
 
   .tab {
-    padding: var(--space-3) var(--space-4);
-    background: none;
-    border: none;
-    border-bottom: 3px solid transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-4);
+    min-height: 44px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-lg);
     font-family: var(--font-sans);
-    font-size: var(--text-base);
-    font-weight: 500;
+    font-size: var(--text-sm);
+    font-weight: 600;
     color: var(--color-text-secondary);
     cursor: pointer;
     transition: all var(--transition-fast);
-    margin-bottom: -2px;
+    white-space: nowrap;
   }
 
-  .tab:hover {
-    color: var(--color-text);
+  .tab-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+
+  .tab-icon .icon-svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .tab .icon-svg,
+  .btn-primary .icon-svg,
+  .btn-secondary .icon-svg,
+  .btn-icon .icon-svg,
+  .integration-icon .icon-svg,
+  .info-icon .icon-svg,
+  .access-denied-icon .icon-svg {
+    color: currentColor;
+  }
+
+  .tab .icon-svg:hover,
+  .btn-primary .icon-svg:hover,
+  .btn-secondary .icon-svg:hover,
+  .btn-icon .icon-svg:hover,
+  .integration-icon .icon-svg:hover,
+  .info-icon .icon-svg:hover,
+  .access-denied-icon .icon-svg:hover {
+    color: currentColor;
+    transform: none;
+  }
+
+  .tab-label {
+    line-height: 1.1;
+  }
+
+  .tab:hover:not(:disabled) {
     background-color: var(--color-bg-secondary);
+    color: var(--color-text);
   }
 
   .tab.active {
+    background-color: var(--color-bg);
     color: var(--color-primary);
-    border-bottom-color: var(--color-primary);
+    border-color: var(--color-border);
+    box-shadow: var(--shadow-sm);
   }
 
   .tab-content {
@@ -751,7 +1057,7 @@
     font-size: var(--text-xl);
     font-weight: 600;
     color: var(--color-text);
-    margin: 0 0 var(--space-6) 0;
+    margin: 0;
   }
 
   .section-header {
@@ -789,9 +1095,17 @@
     color: var(--color-text);
   }
 
+  .form-group-title {
+    margin: 0;
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--color-text);
+  }
+
   .logo-upload {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--space-4);
   }
 
@@ -818,8 +1132,9 @@
   }
 
   .color-row {
-    display: flex;
-    gap: var(--space-6);
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-4);
   }
 
   .color-input {
@@ -880,42 +1195,79 @@
     gap: var(--space-3);
   }
 
+  .btn-with-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+  }
+
   .btn-primary,
   .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
     padding: var(--space-3) var(--space-6);
     border-radius: var(--radius-md);
+    border: 1px solid transparent;
     font-family: var(--font-sans);
-    font-size: var(--text-base);
-    font-weight: 500;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    line-height: 1;
     cursor: pointer;
     transition: all var(--transition-fast);
   }
 
   .btn-primary {
+    background-color: var(--color-primary);
+    color: white;
+    border-color: var(--color-primary);
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background-color: var(--color-secondary);
+    border-color: var(--color-secondary);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .btn-secondary {
     background-color: var(--color-bg);
     color: var(--color-text);
     border: 1px solid var(--color-border);
   }
 
-  .btn-primary:hover:not(:disabled) {
-    background-color: var(--color-bg-secondary);
-    border-color: var(--color-text-secondary);
-  }
-
-  .btn-primary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    background-color: var(--color-bg-secondary);
-    color: var(--color-text-secondary);
-    border: 1px solid var(--color-border);
-  }
-
-  .btn-secondary:hover {
+  .btn-secondary:hover:not(:disabled) {
     background-color: var(--color-bg-tertiary);
-    color: var(--color-text);
+    border-color: var(--color-text-tertiary);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .btn-secondary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .btn-primary .icon-svg,
+  .btn-secondary .icon-svg {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+
+  .icon-spin {
+    animation: settings-spin 0.8s linear infinite;
   }
 
   .text-secondary {
@@ -924,7 +1276,7 @@
   }
 
   .tab:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     cursor: not-allowed;
   }
 
@@ -956,11 +1308,15 @@
 
   .users-table {
     overflow-x: auto;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background-color: var(--color-bg);
   }
 
   table {
     width: 100%;
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
   }
 
   thead {
@@ -984,6 +1340,10 @@
     padding: var(--space-4);
     border-bottom: 1px solid var(--color-border);
     font-size: var(--text-sm);
+  }
+
+  tbody tr:last-child td {
+    border-bottom: none;
   }
 
   td:last-child {
@@ -1021,8 +1381,8 @@
   }
 
   .btn-icon {
-    background: none;
-    border: none;
+    background: transparent;
+    border: 1px solid transparent;
     cursor: pointer;
     padding: var(--space-2);
     border-radius: var(--radius-md);
@@ -1030,18 +1390,27 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
-    opacity: 0.6;
-  }
-
-  .btn-icon:hover:not(:disabled) {
-    background-color: var(--color-bg-secondary);
+    width: 34px;
+    height: 34px;
+    color: var(--color-text-secondary);
     opacity: 1;
   }
 
+  .btn-icon:hover:not(:disabled) {
+    background-color: var(--color-bg-tertiary);
+    border-color: var(--color-border);
+    color: var(--color-primary);
+    transform: translateY(-1px);
+  }
+
   .btn-icon:disabled {
-    opacity: 0.3;
+    opacity: 0.35;
     cursor: not-allowed;
+  }
+
+  .btn-icon .icon-svg {
+    width: 16px;
+    height: 16px;
   }
 
   .access-denied {
@@ -1050,15 +1419,29 @@
   }
 
   .access-denied-icon {
-    font-size: 64px;
-    margin-bottom: var(--space-4);
+    width: 96px;
+    height: 96px;
+    margin: 0 auto var(--space-4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-primary);
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-full);
+  }
+
+  .access-denied-icon .icon-svg {
+    width: 56px;
+    height: 56px;
+    stroke-width: 1.8;
   }
 
   .access-denied h2 {
     font-size: var(--text-2xl);
     font-weight: 600;
     color: var(--color-text);
-    margin: 0 0 var(--space-2) 0;
+    margin-bottom: var(--space-4);
   }
 
   .access-denied p {
@@ -1069,6 +1452,7 @@
   /* Integrazioni */
   .integrations-grid {
     display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: var(--space-4);
     margin-bottom: var(--space-6);
   }
@@ -1077,11 +1461,17 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
     padding: var(--space-5);
-    background-color: var(--color-bg);
+    background: linear-gradient(180deg, var(--color-bg), var(--color-bg-secondary));
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  }
+
+  .integration-card:hover {
+    border-color: var(--color-text-tertiary);
+    box-shadow: var(--shadow-sm);
   }
 
   .integration-card.disabled {
-    opacity: 0.7;
+    opacity: 0.85;
   }
 
   .integration-header {
@@ -1091,8 +1481,21 @@
   }
 
   .integration-icon {
-    font-size: 32px;
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-primary);
+    background-color: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
     flex-shrink: 0;
+  }
+
+  .integration-icon .icon-svg {
+    width: 22px;
+    height: 22px;
   }
 
   .integration-info h3 {
@@ -1127,22 +1530,37 @@
   }
 
   .status-badge.status-inactive {
-    background-color: var(--color-bg-secondary);
+    background-color: var(--color-bg-tertiary);
     color: var(--color-text-secondary);
   }
 
   .info-box {
     display: flex;
+    align-items: flex-start;
     gap: var(--space-3);
     padding: var(--space-4);
     background-color: var(--color-bg-secondary);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-border);
     border-left: 4px solid var(--color-primary);
   }
 
   .info-icon {
-    font-size: 24px;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-primary);
+    background-color: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-full);
     flex-shrink: 0;
+  }
+
+  .info-icon .icon-svg {
+    width: 16px;
+    height: 16px;
   }
 
   .info-box p {
@@ -1165,8 +1583,9 @@
 
   .info-section {
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     padding: var(--space-5);
+    background: linear-gradient(180deg, var(--color-bg), var(--color-bg-secondary));
   }
 
   .info-section h3 {
@@ -1218,5 +1637,72 @@
   .info-link:hover {
     color: var(--color-secondary);
     text-decoration: underline;
+  }
+
+  .info-link-button {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font: inherit;
+  }
+
+  @keyframes settings-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (max-width: 1024px) {
+    .impostazioni {
+      padding: var(--space-6);
+    }
+
+    .info-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .impostazioni {
+      padding: var(--space-6) var(--space-4);
+    }
+
+    .tabs {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    .tab {
+      flex: 0 0 auto;
+    }
+
+    .form-row,
+    .color-row {
+      grid-template-columns: 1fr;
+    }
+
+    .section-header {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: var(--space-3);
+    }
+
+    .report-actions {
+      flex-direction: column;
+    }
+
+    .report-actions .btn-primary,
+    .report-actions .btn-secondary {
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    th,
+    td {
+      padding: var(--space-3);
+    }
   }
 </style>

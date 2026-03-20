@@ -1,407 +1,266 @@
-# Architettura del Programma
+# Architettura del Programma (stato attuale)
 
-## Scopo del progetto
+Documento aggiornato al **14 marzo 2026** in base al codice presente nel repository.
 
-`GMD Medical Platform` e' un'app desktop per la gestione ambulatoriale costruita con:
+## 1) Versione e stack
 
-- frontend `SvelteKit`
-- shell desktop `Tauri`
-- database locale `PostgreSQL`
+- Versione applicazione: `0.1.0`
+  - `package.json`
+  - `src-tauri/tauri.conf.json`
+- Desktop shell: `Tauri 2`
+- Frontend: `SvelteKit 2` + `Svelte 5` + `TypeScript`
+- Database locale: `SQLite` via `@tauri-apps/plugin-sql`
+- Referti DOCX: `docxtemplater` + `pizzip`
+- Hash password: `bcryptjs`
 
-L'app e' pensata come applicazione locale: il frontend parla direttamente con il database tramite i plugin Tauri, senza un backend HTTP separato.
+L'app e' una desktop app locale: **nessun backend HTTP separato**.
 
-## Struttura generale
+## 2) Architettura a livelli
 
-Il progetto e' diviso in 3 livelli principali:
+### Livello UI (SvelteKit)
 
-1. interfaccia utente (`src/routes`, `src/lib/components`)
-2. logica applicativa e accesso dati (`src/lib/db`, `src/lib/utils`, `src/lib/reports`)
-3. runtime desktop e permessi nativi (`src-tauri`)
+- Routing e pagine in `src/routes`
+- Componenti riusabili in `src/lib/components`
+- Store globali leggeri in `src/lib/stores`
 
-In pratica:
+### Livello applicativo (TypeScript)
 
-- `SvelteKit` gestisce pagine, stato UI e componenti
-- `Tauri` fornisce accesso ai plugin nativi (`sql`, `dialog`, `fs`, `opener`)
-- `PostgreSQL` conserva utenti, ambulatori, pazienti, visite e dati clinici
+- Accesso dati e query SQL in `src/lib/db`
+- Logica clinica/serializzazione in `src/lib/utils/visit-clinical.ts`
+- Configurazioni cliniche in `src/lib/configs`
+- Generazione referto in `src/lib/reports/generateVisitaReferto.ts`
 
-## Frontend: come e' organizzata la UI
+### Livello desktop/nativo (Tauri)
+
+- Runtime Rust in `src-tauri/src/lib.rs`
+- Config app/permessi in `src-tauri/tauri.conf.json`
+- Plugin nativi: SQL, dialog, fs, opener
+
+## 3) Avvio runtime
+
+1. `src/routes/+layout.ts` forza `ssr = false` (SPA mode).
+2. `src/routes/+layout.svelte` su mount:
+   - chiama `initDatabase()`
+   - ripristina sessione utente (`authStore.restore()`)
+   - ripristina ambulatorio corrente (`ambulatorioStore.restore()`)
+3. `initDatabase()` (`src/lib/db/schema.ts`):
+   - apre/riusa connessione SQLite
+   - applica migrazioni
+   - se DB vuoto fa bootstrap dati demo (utente admin, ambulatori demo, pazienti demo)
+
+## 4) Frontend: routing e responsabilita'
 
 ### Routing principale
 
-Le pagine sono nel filesystem routing di SvelteKit:
-
 - `src/routes/+page.svelte`
-  - login iniziale
+  - login
 - `src/routes/ambulatori/+page.svelte`
   - selezione ambulatorio
+- `src/routes/ambulatori/[id]/+layout.svelte`
+  - guard auth + caricamento ambulatorio + layout app
 - `src/routes/ambulatori/[id]/+page.svelte`
-  - dashboard dell'ambulatorio
+  - dashboard e statistiche operative
 - `src/routes/ambulatori/[id]/pazienti/+page.svelte`
-  - gestione anagrafica e cerca paziente
+  - gestione anagrafica + modalita cerca paziente
 - `src/routes/ambulatori/[id]/visite/+page.svelte`
-  - archivio visite
+  - archivio visite (ricerca, modifica, eliminazione)
 - `src/routes/ambulatori/[id]/visite/nuova/+page.svelte`
-  - creazione nuova visita
+  - wizard nuova visita (selezione paziente + compilazione clinica)
 - `src/routes/ambulatori/[id]/impostazioni/+page.svelte`
-  - impostazioni dell'ambulatorio
+  - impostazioni ambulatorio/sistema e gestione utenti (admin)
 
-### Componenti riusabili
+### Layout e navigazione
 
-I componenti UI base sono in `src/lib/components`:
+- `AppLayout.svelte` gestisce struttura generale + toggle sidebar
+- `Sidebar.svelte` gestisce menu, logout, cambio ambulatorio, voci disabilitate "Presto"
+- `ToastContainer.svelte` mostra notifiche globali
 
-- `AppLayout.svelte`: layout generale con sidebar
-- `Sidebar.svelte`: menu laterale e stato attivo delle voci
-- `PageHeader.svelte`: header pagina
-- `Card.svelte`: card dashboard
-- `Table.svelte`: tabella riusabile
-- `Modal.svelte`: finestra modale base
-- `Button.svelte`, `Input.svelte`, `Select.svelte`, `Textarea.svelte`
-- `ToastContainer.svelte`: notifiche
+### Stato condiviso (store)
 
-Questi componenti sono riusati dalle varie pagine per mantenere uno stile coerente.
+- `authStore`
+  - sessione utente in `sessionStorage` (`gmd_user`)
+- `ambulatorioStore`
+  - ambulatorio corrente + applicazione tema CSS
+  - persistenza in `sessionStorage` (`gmd_ambulatorio`)
+- `sidebarCollapsedStore`
+  - stato sidebar (persistito in `localStorage` come `sidebarCollapsed`)
+- `toastStore`
+  - notifiche transitorie
 
-### Componenti clinici della visita
+Nota: nel login e' presente opzione "Ricordami" che salva username/password in `localStorage` (`gmd_saved_username`, `gmd_saved_password`).
 
-La visita non e' monolitica: e' spezzata in blocchi funzionali in `src/lib/components/visit-blocks`.
+## 5) Flusso visita (core applicativo)
 
-Ogni blocco rappresenta una sezione clinica specifica, per esempio:
+La pagina `visite/nuova` implementa un flusso in 2 step:
 
-- anamnesi
-- fattori di rischio cardiovascolare
-- esami ematici
+1. `select_patient`
+2. `compile_visit`
+
+Caratteristiche principali:
+
+- precompilazione da ultima visita del paziente selezionato
+- caricamento storico esami ematici precedenti
+- calcolo automatico `BMI` e `BSA`
+- validazioni cliniche dedicate (`FH`, terapia ipolipemizzante, diabete tipo, campi minimi)
+- serializzazione blocchi complessi in JSON testuale
+
+Blocchi visita modulari in `src/lib/components/visit-blocks`:
+
+- fattori rischio CV
+- FH assessment
+- anamnesi cardiologica
 - terapia ipolipemizzante
 - terapia domiciliare
+- valutazione odierna
+- esami ematici
+- valutazione rischio CV
+- ecocardiografia
 - conclusioni
-- firme
+- firme visita
 
-Questo approccio riduce la complessita' di `visite/nuova/+page.svelte`, che fa da pagina orchestratrice e non contiene tutta la logica clinica in un unico file.
+La visibilita' dei blocchi e' configurata in `src/lib/configs/visit-blocks-config.ts` tramite `isBlockVisibleForAmbulatorio(...)`.
 
-## Logica dati: il layer `src/lib/db`
+## 6) Data layer (`src/lib/db`)
 
-Il progetto usa un data layer dedicato, separato dalla UI.
+### Connessione e bootstrap
 
-### Punto di ingresso del database
+- `config.ts`
+  - consente solo URL `sqlite:*` (attuale: `sqlite:gmd.db`)
+- `client.ts`
+  - singleton connessione
+  - normalizzazione parametri query
+  - helper `insertReturningId(...)`
+- `schema.ts`
+  - coordinamento init/migrazioni/bootstrap
 
-Il bootstrap parte da:
+### Migrazioni
 
-- `src/lib/db/schema.ts`
+`migrations.ts` esegue:
 
-Qui avvengono, in ordine:
+- creazione tabelle base (se mancanti)
+- aggiunta colonne legacy mancanti (ambulatori, pazienti, visite, fattori_rischio_cv)
+- creazione indici
+- fix legacy su relazioni `fattori_rischio_cv -> visite`
+- cleanup oggetti SQL legacy riferiti a `visite_old`
+- update nome ambulatorio legacy (`Dermatologia` -> `Day Hospital Riabilitativa`)
 
-1. apertura della connessione
-2. applicazione delle migration
-3. eventuale import automatico dal vecchio SQLite
-4. eventuale seed iniziale (admin + dati demo)
+### Moduli dominio
 
-Le funzioni pubbliche usate dal resto dell'app sono:
+- `auth.ts`
+  - autenticazione, CRUD utenti, cambio password
+- `ambulatori.ts`
+  - CRUD ambulatori
+- `pazienti.ts`
+  - CRUD pazienti e ricerca
+- `visite.ts`
+  - CRUD visite, ricerca, storico esami ematici precedenti
+- `fattori-rischio-cv.ts`
+  - CRUD fattori rischio associati alla visita
+- `visite-complete.ts`
+  - orchestrazione salvataggio visita + fattori rischio
 
-- `initDatabase()`
-- `getDatabase()`
-
-### Connessione e gestione errori
-
-La connessione e' centralizzata in:
-
-- `src/lib/db/config.ts`
-- `src/lib/db/client.ts`
-
-`config.ts` contiene il path di connessione SQLite.
-
-`client.ts` si occupa di:
-
-- aprire la connessione a SQLite via `@tauri-apps/plugin-sql`
-- riusare una singola connessione in memoria
-- normalizzare i parametri prima delle query
-- fornire `insertReturningId(...)` usando `lastInsertId` di SQLite
-
-### Moduli dati separati per dominio
-
-Ogni area del dominio ha un modulo dedicato:
-
-- `auth.ts`: login e utenti
-- `ambulatori.ts`: lettura e scrittura ambulatori
-- `pazienti.ts`: CRUD pazienti e ricerca
-- `visite.ts`: CRUD visite e query correlate
-- `fattori-rischio-cv.ts`: dati aggiuntivi della visita
-- `visite-complete.ts`: orchestrazione di salvataggi composti
-
-Questo significa che la UI non parla direttamente a SQL raw nella pagina: chiama funzioni di dominio gia' tipizzate.
-
-### Tipi condivisi
-
-I tipi TypeScript condivisi stanno in:
-
-- `src/lib/db/types.ts`
-
-Questo file descrive i modelli applicativi principali:
-
-- `Utente`
-- `Ambulatorio`
-- `Paziente`
-- `Visita`
-- tipi dei vari blocchi clinici della visita
-
-L'obiettivo e' mantenere la UI coerente con la forma dei dati restituiti dal database.
-
-## Database: modello e strategia
-
-### Motore
-
-Il database runtime e' `SQLite`.
-
-Il frontend non usa un ORM: le query sono scritte a mano in SQL, con placeholder `?`.
-
-### Migration
-
-Le migration strutturali sono in:
-
-- `src/lib/db/migrations.ts`
-
-Qui viene garantito lo schema SQLite finale con:
+### Tabelle principali
 
 - `users`
 - `ambulatori`
 - `pazienti`
 - `visite`
 - `fattori_rischio_cv`
-- aggiunta automatica delle colonne mancanti sulle installazioni piu' vecchie
 
-L'app usa direttamente lo stesso file SQLite storico, quindi non serve piu' una fase di import da un database separato.
+Diversi campi clinici della tabella `visite` sono `TEXT` serializzati JSON (es. `esami_ematici`, `fh_assessment`, `terapia_ipolipemizzante`, `valutazione_rischio_cv`, `firme_visita`).
 
-## Runtime desktop: Tauri
+## 7) Referti DOCX
 
-La parte desktop sta in `src-tauri`.
+### Moduli coinvolti
 
-### Configurazione principale
+- Template: `src/lib/templates/template_dislip.docx`
+- Generazione: `src/lib/reports/generateVisitaReferto.ts`
+- Config percorso base: `src/lib/utils/report-storage.ts`
 
-Il file chiave e':
+### Flusso attuale
 
-- `src-tauri/tauri.conf.json`
+1. la visita viene salvata in DB
+2. viene caricato il template DOCX:
+   - prima come asset web
+   - fallback come resource bundle Tauri
+3. `docxtemplater` valorizza i placeholder
+4. il file viene scritto automaticamente su filesystem
+5. la pagina prova ad aprirlo in Word tramite `plugin-opener`
 
-Qui sono definiti:
+### Percorso output
+
+- Cartella base default: `Documenti/GMD Medical/Referti`
+- Override utente: `localStorage` (`gmd_report_base_dir`) configurabile in Impostazioni
+- Struttura:
+  - `<base>/<Ambulatorio sanitizzato>/...`
+  - per "Ambulatorio Cardiologico delle Dislipidemie" aggiunge sottocartella:
+    - `Repatha` oppure `Praluent` oppure `Leqvio` oppure `Altro`
+
+## 8) Runtime Tauri e permessi
+
+### Entry point Rust
+
+- `src-tauri/src/main.rs`
+- `src-tauri/src/lib.rs`
+
+Plugin inizializzati:
+
+- `tauri-plugin-dialog`
+- `tauri-plugin-fs`
+- `tauri-plugin-opener`
+- `tauri-plugin-sql` (SQLite)
+
+### Config principale
+
+`src-tauri/tauri.conf.json` definisce:
 
 - finestra principale
-- build command frontend
-- cartella del bundle
-- risorse incluse nel pacchetto
-- capability di sicurezza per la finestra `main`
-
-### Plugin Tauri usati
-
-L'app usa questi plugin:
-
-- `plugin-sql`
-  - accesso diretto al database
-- `plugin-dialog`
-  - finestre native, per esempio "salva con nome"
-- `plugin-fs`
-  - scrittura del file DOCX
-- `plugin-opener`
-  - apertura di file o link esterni quando necessario
-
-### Permessi
-
-Tauri 2 usa un modello di permessi espliciti.
-
-Per questo, nella capability `main-capability`, sono stati dichiarati i permessi necessari per:
-
-- query SQL
-- apertura del dialog di salvataggio
-- scrittura del file sul filesystem
-
-Senza questi permessi, il frontend puo' funzionare ma le chiamate native vengono bloccate.
-
-## Generazione del referto DOCX
-
-La generazione del referto e' separata dalla pagina visita.
-
-### File coinvolti
-
-- `src/lib/templates/template_dislip.docx`
-  - template Word con i placeholder
-- `src/lib/reports/generateVisitaReferto.ts`
-  - logica di sostituzione placeholder e salvataggio
-
-### Come funziona
-
-Il flusso e':
-
-1. la visita viene salvata nel database
-2. la pagina chiama `generateVisitaReferto(...)`
-3. il template DOCX viene caricato
-   - prima come asset web
-   - in fallback come risorsa Tauri bundle
-4. `docxtemplater` sostituisce i placeholder
-5. `plugin-dialog` chiede all'utente dove salvare
-6. `plugin-fs` scrive il file `.docx`
-
-### Responsabilita' del modulo referto
-
-`generateVisitaReferto.ts` contiene:
-
-- formattazione date
-- conversione dei campi clinici in testo leggibile
-- gestione dei blocchi opzionali del template
-- applicazione del limite a 3 specializzandi
-- scelta del nome file
-- gestione degli errori specifici del referto
-
-Questo evita di mettere logica di documento direttamente dentro la pagina Svelte.
-
-## Flusso tecnico di una nuova visita
-
-Il caso d'uso piu' importante dell'app e' la creazione di una visita.
-
-### Sequenza semplificata
-
-1. l'utente apre `visite/nuova`
-2. seleziona o crea il paziente
-3. compila i blocchi clinici
-4. la pagina raccoglie i valori dai vari componenti
-5. chiama il layer dati (`visite-complete.ts` / `visite.ts`)
-6. vengono salvate:
-   - riga principale `visite`
-   - eventuale riga `fattori_rischio_cv`
-7. se richiesto, parte la generazione del referto DOCX
-
-### Perche' esiste `visite-complete.ts`
-
-La visita e' composta da piu' sotto-sezioni. Per questo esiste un modulo di orchestrazione che coordina:
-
-- salvataggio dei dati base della visita
-- salvataggio di strutture collegate
-- logica condizionale, per esempio non creare record vuoti inutili
-
-In questo modo la pagina UI non deve conoscere i dettagli di persistenza.
-
-## Stato e comunicazione tra componenti
-
-L'app non usa un sistema complesso di state management globale.
-
-Lo stato e' gestito soprattutto in modo locale tramite:
-
-- variabili reattive Svelte nei singoli file
-- `props` e `bind:` tra pagina e componenti
-- moduli TypeScript condivisi per la logica
-
-Questo rende il progetto relativamente semplice da seguire, ma comporta una forte responsabilita' delle pagine orchestratrici, soprattutto in:
-
-- `src/routes/ambulatori/[id]/visite/nuova/+page.svelte`
-- `src/routes/ambulatori/[id]/pazienti/+page.svelte`
-- `src/routes/ambulatori/[id]/visite/+page.svelte`
-
-## Scelte architetturali importanti
-
-### 1. Nessun backend HTTP
-
-Scelta:
-
-- il frontend parla direttamente a Tauri e al database
-
-Vantaggi:
-
-- app piu' semplice da distribuire localmente
-- meno componenti da mantenere
-
-Tradeoff:
-
-- la logica dati vive nel client
-- sicurezza e permessi Tauri diventano centrali
-
-### 2. SQL raw invece di ORM
-
-Scelta:
-
-- query scritte manualmente
-
-Vantaggi:
-
-- controllo totale sulle query
-- meno astrazione
-
-Tradeoff:
-
-- bisogna gestire a mano cast, placeholder, compatibilita' tra DB
-- piu' attenzione richiesta durante le migrazioni
-
-### 3. Visita modulare a blocchi
-
-Scelta:
-
-- una visita e' composta da componenti clinici separati
-
-Vantaggi:
-
-- codice piu' leggibile
-- sezioni riusabili e piu' facili da manutenere
-
-Tradeoff:
-
-- la pagina padre deve coordinare molti stati
-
-## Build e avvio
-
-Gli script principali sono in `package.json`:
-
-- `npm run dev`
-  - sviluppo frontend
-- `npm run build`
-  - build SvelteKit
-- `npm run tauri`
-  - avvio CLI Tauri
-In sviluppo reale, il flusso tipico e':
-
-1. `npm run tauri dev` oppure `npm run tauri`
-2. il frontend viene servito da Vite
-3. Tauri apre la finestra desktop che carica la UI e il database SQLite
-
-## Dove intervenire in base al tipo di modifica
-
-### Se vuoi cambiare la UI
-
-Intervieni in:
-
-- `src/routes/...`
-- `src/lib/components/...`
-
-### Se vuoi cambiare il comportamento del database
-
-Intervieni in:
-
-- `src/lib/db/...`
-
-Se cambia lo schema:
-
-- `src/lib/db/migrations.ts`
-
-### Se vuoi cambiare il referto
-
-Intervieni in:
-
-- `src/lib/templates/template_dislip.docx`
-- `src/lib/reports/generateVisitaReferto.ts`
-
-### Se vuoi cambiare permessi o accesso nativo
-
-Intervieni in:
-
-- `src-tauri/tauri.conf.json`
-- `src-tauri/capabilities/default.json`
-
-## Riassunto finale
-
-Dal punto di vista della programmazione, questo software e' una desktop app a livelli:
-
-- presentazione in `SvelteKit`
-- logica applicativa in moduli TypeScript
-- accesso dati diretto a `PostgreSQL` via plugin Tauri
-- integrazione nativa desktop tramite permessi e plugin Tauri
-
-La parte piu' sensibile del progetto e' l'asse:
-
-- `visite/nuova`
-- `src/lib/db/*`
-- `src/lib/reports/generateVisitaReferto.ts`
-- `src-tauri/tauri.conf.json`
-
-Perche' e' il punto in cui si incontrano UI, persistenza, generazione documenti e permessi desktop.
+- comandi build/dev frontend
+- bundle resources (incluso template DOCX)
+- preload SQL su `sqlite:gmd.db`
+- permessi app (dialog/fs/opener/sql) per la finestra `main`
+
+## 9) Build, comandi e modalita' sviluppo
+
+Script da `package.json`:
+
+- `npm run dev` -> Vite dev server
+- `npm run build` -> build frontend
+- `npm run check` -> type checking Svelte/TS
+- `npm run audit:sqlite` -> audit URI DB non-SQLite in `src`/`src-tauri`
+- `npm run tauri` -> CLI Tauri (`npm run tauri dev` / `npm run tauri build`)
+
+## 10) Punti caldi dove intervenire
+
+Se cambi:
+
+- UI/UX pagine:
+  - `src/routes/...`
+  - `src/lib/components/...`
+- regole cliniche e serializzazione:
+  - `src/lib/utils/visit-clinical.ts`
+  - `src/lib/configs/clinical-options.ts`
+- persistenza dati o query:
+  - `src/lib/db/...`
+  - `src/lib/db/migrations.ts` (se cambia schema)
+- referto:
+  - `src/lib/reports/generateVisitaReferto.ts`
+  - `src/lib/templates/template_dislip.docx`
+- runtime desktop/permessi:
+  - `src-tauri/tauri.conf.json`
+  - `src-tauri/src/lib.rs`
+
+## 11) Riassunto operativo
+
+Il programma e' oggi una desktop app locale a 3 livelli:
+
+1. `SvelteKit` per UI e orchestrazione flussi
+2. moduli TypeScript per logica clinica + data access SQL
+3. `Tauri` per runtime nativo, filesystem/dialog e DB SQLite
+
+L'asse tecnico piu' critico resta:
+
+- `visite/nuova` (flusso clinico e validazioni)
+- `src/lib/db/*` (coerenza dati e migrazioni)
+- `src/lib/reports/generateVisitaReferto.ts` (documenti clinici)
+- `src-tauri/tauri.conf.json` (permessi e integrazione nativa)

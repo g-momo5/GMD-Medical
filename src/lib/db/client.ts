@@ -1,7 +1,8 @@
 import Database from '@tauri-apps/plugin-sql';
-import { DATABASE_URL } from './config';
+import { getRuntimeDatabaseUrl } from './config';
 
 let db: Database | null = null;
+let loadedDatabaseUrl: string | null = null;
 
 function normalizeQueryParam(value: unknown): unknown {
   if (value === undefined || value === null) {
@@ -55,7 +56,8 @@ export async function loadDatabase(): Promise<Database> {
     return db;
   }
 
-  db = wrapDatabase(await Database.load(DATABASE_URL));
+  loadedDatabaseUrl = await getRuntimeDatabaseUrl();
+  db = wrapDatabase(await Database.load(loadedDatabaseUrl));
   return db;
 }
 
@@ -69,15 +71,25 @@ export function getLoadedDatabase(): Database {
 
 export async function resetLoadedDatabase(): Promise<void> {
   if (!db) {
+    loadedDatabaseUrl = null;
     return;
   }
 
   try {
-    await db.close();
+    if (loadedDatabaseUrl) {
+      await db.close(loadedDatabaseUrl);
+    } else {
+      await db.close();
+    }
   } catch {
-    // ignore close failures during reset
+    try {
+      await db.close();
+    } catch {
+      // ignore close failures during reset
+    }
   } finally {
     db = null;
+    loadedDatabaseUrl = null;
   }
 }
 

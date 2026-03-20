@@ -166,6 +166,62 @@ export async function getFattoriRischioCVByVisitaId(
   };
 }
 
+export async function getFattoriRischioCVByVisitaIds(visitaIds: number[]): Promise<FattoriRischioCV[]> {
+  if (visitaIds.length === 0) {
+    return [];
+  }
+
+  const db = await initDatabase();
+  const normalizedIds = visitaIds
+    .map((visitaId) => normalizeIntegerForWrite(visitaId))
+    .filter((visitaId): visitaId is number => visitaId !== null);
+
+  if (normalizedIds.length === 0) {
+    return [];
+  }
+
+  const placeholders = normalizedIds.map(() => '?').join(', ');
+  const rows = await db.select<Array<
+    Omit<FattoriRischioCV, 'familiarita' | 'ipertensione' | 'diabete' | 'dislipidemia' | 'obesita'> & {
+      familiarita: Booleanish;
+      ipertensione: Booleanish;
+      diabete: Booleanish;
+      dislipidemia: Booleanish;
+      obesita: Booleanish;
+    }
+  >>(
+    `SELECT
+      id,
+      visita_id,
+      familiarita,
+      familiarita_note,
+      ipertensione,
+      diabete,
+      diabete_durata,
+      diabete_tipo,
+      dislipidemia,
+      obesita,
+      fumo,
+      fumo_ex_eta,
+      created_at,
+      updated_at
+    FROM fattori_rischio_cv
+    WHERE visita_id IN (${placeholders})`,
+    normalizedIds
+  );
+
+  return rows.map((row) => ({
+    ...row,
+    familiarita: normalizeBoolean(row.familiarita),
+    ipertensione: normalizeBoolean(row.ipertensione),
+    diabete: normalizeBoolean(row.diabete),
+    diabete_tipo: row.diabete_tipo || '',
+    dislipidemia: normalizeBoolean(row.dislipidemia),
+    obesita: normalizeBoolean(row.obesita),
+    fumo: row.fumo || ''
+  }));
+}
+
 export async function updateFattoriRischioCV(
   data: UpdateFattoriRischioCVInput
 ): Promise<void> {

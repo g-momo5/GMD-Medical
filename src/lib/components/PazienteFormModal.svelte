@@ -8,6 +8,7 @@
   import Autocomplete from './Autocomplete.svelte';
   import Modal from './Modal.svelte';
   import { calcolaCodiceFiscale } from '$lib/utils/codiceFiscale';
+  import type { AutocompleteItem } from '$lib/types/autocomplete';
 
   export let isOpen = false;
   export let paziente: Paziente | null = null;
@@ -16,8 +17,8 @@
   const dispatch = createEventDispatcher();
 
   // Dati per autocomplete
-  let comuniData: any[] = [];
-  let statiData: any[] = [];
+  let comuniData: AutocompleteItem[] = [];
+  let statiData: AutocompleteItem[] = [];
 
   // Codici catastali per il calcolo CF
   let codiceCatastaleNascita = '';
@@ -232,7 +233,7 @@
           placeholder="Scrivi almeno 3 caratteri..."
           error={formErrors.luogo_nascita}
           minChars={3}
-          onSelect={(item) => { codiceCatastaleNascita = item.codiceCatastale; }}
+          onSelect={(item: AutocompleteItem) => { codiceCatastaleNascita = item.codiceCatastale; }}
           required
         />
       </div>

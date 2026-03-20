@@ -2,6 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import { getAllPazienti } from '$lib/db/pazienti';
   import { getFattoriRischioCVByVisitaId } from '$lib/db/fattori-rischio-cv';
+  import { checkAppuntamentoSlotAvailability } from '$lib/db/appuntamenti';
   import { getPreviousEsamiEmaticiByPaziente } from '$lib/db/visite';
   import { isBlockVisibleForAmbulatorio } from '$lib/configs/visit-blocks-config';
   import type { DiabeteTipo, Paziente, PreviousEsamiEmaticiMap, Visita } from '$lib/db/types';
@@ -34,6 +35,7 @@
   import EsamiEmatici from '$lib/components/visit-blocks/EsamiEmatici.svelte';
   import FirmeVisita from '$lib/components/visit-blocks/FirmeVisita.svelte';
   import IpercolesterolemiaFamiliareFH from '$lib/components/visit-blocks/IpercolesterolemiaFamiliareFH.svelte';
+  import Input from '$lib/components/Input.svelte';
   import TerapiaIpolipemizzante from '$lib/components/visit-blocks/TerapiaIpolipemizzante.svelte';
   import ValutazioneRischioCardiovascolare from '$lib/components/visit-blocks/ValutazioneRischioCardiovascolare.svelte';
 
@@ -58,6 +60,33 @@
 
   function normalizeTipoVisita(value: string | null | undefined): string {
     return tipoVisitaOptions.some((option) => option.value === value) ? value ?? '' : '';
+  }
+
+  function getTodayVisitDate(): string {
+    return new Date().toISOString().split('T')[0];
+  }
+
+  function normalizeVisitDate(value: string | null | undefined): string {
+    if (typeof value !== 'string') {
+      return '';
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return '';
+    }
+
+    const directDateMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (directDateMatch) {
+      return directDateMatch[1];
+    }
+
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) {
+      return '';
+    }
+
+    return parsed.toISOString().split('T')[0];
   }
 
   let formData = {
@@ -158,7 +187,11 @@
     syncSelectedPazienteRecord();
   }
   $: {
-    const nextLookupKey = isOpen && formData.paziente_id ? `${formData.paziente_id}:${visita?.id || 'new'}:${formData.data_visita}` : '';
+    const esamiReferenceDate = (esamiEmatici.data_ee || '').trim() || formData.data_visita;
+    const nextLookupKey =
+      isOpen && formData.paziente_id
+        ? `${formData.paziente_id}:${visita?.id || 'new'}:${esamiReferenceDate}`
+        : '';
     if (previousEsamiLookupKey !== nextLookupKey) {
       previousEsamiLookupKey = nextLookupKey;
       void loadPreviousEsamiEmatici(nextLookupKey);
@@ -225,12 +258,10 @@
   }
 
   function resetNewVisitState() {
-    const now = new Date();
-
     formData = {
       paziente_id: 0,
       paziente_nome: '',
-      data_visita: now.toISOString().slice(0, 16),
+      data_visita: getTodayVisitDate(),
       tipo_visita: '',
       motivo: '',
       altezza: '',
@@ -259,8 +290,7 @@
   }
 
   function applyVisitaState(record: Visita) {
-    const visitDate = new Date(record.data_visita);
-    const dataVisita = Number.isNaN(visitDate.getTime()) ? '' : visitDate.toISOString().slice(0, 16);
+    const dataVisita = normalizeVisitDate(record.data_visita);
 
     formData = {
       paziente_id: record.paziente_id,
@@ -328,7 +358,8 @@
   }
 
   async function loadPreviousEsamiEmatici(requestKey = previousEsamiLookupKey) {
-    if (!formData.paziente_id || !formData.data_visita) {
+    const esamiReferenceDate = (esamiEmatici.data_ee || '').trim() || formData.data_visita;
+    if (!formData.paziente_id || !esamiReferenceDate) {
       previousEsamiEmatici = {};
       return;
     }
@@ -336,7 +367,7 @@
     try {
       const nextValues = await getPreviousEsamiEmaticiByPaziente({
         pazienteId: formData.paziente_id,
-        beforeDate: formData.data_visita,
+        beforeDate: esamiReferenceDate,
         excludeVisitaId: visita?.id
       });
 
@@ -353,7 +384,7 @@
     }
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!formData.paziente_id) {
       alert('Seleziona un paziente');
       return;
@@ -384,6 +415,32 @@
     if (terapiaError) {
       alert(terapiaError);
       return;
+    }
+
+    const followUpDateTime = (pianificazioneFollowUp.dataOraProssimaVisita || '').trim();
+    if (followUpDateTime) {
+      try {
+        const availability = await checkAppuntamentoSlotAvailability({
+          ambulatorioId,
+          dataOraInizio: followUpDateTime
+        });
+
+        if (!availability.available) {
+          const suggestionsText =
+            availability.suggestedTimes.length > 0
+              ? ` Slot disponibili: ${availability.suggestedTimes.join(', ')}.`
+              : '';
+          alert(`Lo slot scelto per la prossima visita non è disponibile.${suggestionsText}`);
+          return;
+        }
+      } catch (error) {
+        alert(
+          `Impossibile validare lo slot della prossima visita: ${
+            error instanceof Error ? error.message : 'errore sconosciuto'
+          }`
+        );
+        return;
+      }
     }
 
     const hasEsamiEmatici = Object.values(esamiEmatici).some((value) => String(value || '').trim());
@@ -438,11 +495,31 @@
     showPatientDropdown = false;
     dispatch('close');
   }
+
+  function handleOverlayClick(event: MouseEvent): void {
+    if (event.target === event.currentTarget) {
+      handleClose();
+    }
+  }
+
+  function handleOverlayKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      handleClose();
+    }
+  }
 </script>
 
 {#if isOpen}
-  <div class="modal-overlay" on:click={handleClose}>
-    <div class="modal modal-large" on:click|stopPropagation>
+  <div
+    class="modal-overlay"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    on:click={handleOverlayClick}
+    on:keydown={handleOverlayKeydown}
+  >
+    <div class="modal modal-large">
       <div class="modal-header">
         <h2>{visita ? 'Modifica Visita' : 'Nuova Visita'}</h2>
         <button class="close-btn" on:click={handleClose}>×</button>
@@ -488,8 +565,13 @@
           </div>
 
           <div class="form-group">
-            <label for="data_visita">Data e Ora *</label>
-            <input id="data_visita" type="datetime-local" bind:value={formData.data_visita} required />
+            <Input
+              id="data_visita"
+              type="date"
+              label="Data visita"
+              bind:value={formData.data_visita}
+              required
+            />
           </div>
         </div>
 
@@ -599,6 +681,8 @@
             <ValutazioneRischioCardiovascolare
               bind:valutazione={valutazioneRischioCV}
               esami={esamiEmatici}
+              terapia={terapiaIpolipemizzante}
+              eta={etaPaziente}
             />
           {/if}
         </div>
@@ -653,7 +737,11 @@
           ></textarea>
         </div>
 
-        <Conclusioni bind:conclusioni={conclusioni} bind:pianificazioneFollowUp={pianificazioneFollowUp} />
+        <Conclusioni
+          bind:conclusioni={conclusioni}
+          bind:pianificazioneFollowUp={pianificazioneFollowUp}
+          ambulatorioId={ambulatorioId}
+        />
 
         {#if isBlockVisibleForAmbulatorio('firme-visita', ambulatorioId)}
           <FirmeVisita bind:firme={firmeVisita} />

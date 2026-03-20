@@ -39,7 +39,7 @@
     on:input
     on:change
     on:keydown
-  />
+  ></textarea>
   {#if error}
     <span class="error-message">{error}</span>
   {/if}

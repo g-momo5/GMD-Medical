@@ -3,6 +3,7 @@
   import type { FHRiskClassification, UntreatedLdlRange } from '$lib/db/types';
   import { getDutchLipidScoreBreakdown } from '$lib/utils/dutch-lipid-score';
   import Card from '../Card.svelte';
+  import Icon from '../Icon.svelte';
 
   export let enabled = false;
   export let familyHistoryOnePoint = false;
@@ -279,16 +280,7 @@
         {:else}
           <div class="summary-warning" role="status">
             <span class="summary-warning-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M12 3.5 22 20.5H2L12 3.5Z" fill="currentColor" />
-                <path
-                  d="M12 9.5v4.5"
-                  stroke="#ffffff"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                />
-                <circle cx="12" cy="17.1" r="1.15" fill="#ffffff" />
-              </svg>
+              <Icon name="alert-triangle" size={18} />
             </span>
             <span class="summary-warning-text">
               Compilare prima il profilo lipidico per visualizzare totale e classificazione.

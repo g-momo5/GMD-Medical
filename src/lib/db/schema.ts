@@ -70,14 +70,23 @@ export async function initDatabase(): Promise<Database> {
   try {
     return await initPromise;
   } catch (error) {
-    await resetLoadedDatabase();
-    initPromise = null;
+    await resetDatabaseState();
     throw error;
   }
 }
 
 export function getDatabase(): Database {
   return getLoadedDatabase();
+}
+
+export async function resetDatabaseState(): Promise<void> {
+  await resetLoadedDatabase();
+  initPromise = null;
+}
+
+export async function reinitializeDatabase(): Promise<Database> {
+  await resetDatabaseState();
+  return initDatabase();
 }
 
 async function initializeDatabase(): Promise<Database> {

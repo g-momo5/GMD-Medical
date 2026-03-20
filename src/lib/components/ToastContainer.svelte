@@ -2,6 +2,7 @@
   import { toastStore } from '$lib/stores/toast';
   import type { Toast } from '$lib/stores/toast';
 
+  let toasts: Toast[] = [];
   $: toasts = $toastStore;
 
   function getIcon(type: string) {
@@ -13,6 +14,13 @@
       default: return '';
     }
   }
+
+  function handleToastKeydown(event: KeyboardEvent, toast: Toast): void {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toastStore.dismiss(toast.id);
+    }
+  }
 </script>
 
 <div class="toast-container">
@@ -20,11 +28,14 @@
     <div
       class="toast toast-{toast.type}"
       class:dismissing={toast.dismissing}
+      role="button"
+      tabindex="0"
       on:click={() => toastStore.dismiss(toast.id)}
+      on:keydown={(event) => handleToastKeydown(event, toast)}
     >
       <span class="toast-icon">{getIcon(toast.type)}</span>
       <span class="toast-message">{toast.message}</span>
-      <button class="toast-close" on:click|stopPropagation={() => toastStore.dismiss(toast.id)}>
+      <button type="button" class="toast-close" on:click|stopPropagation={() => toastStore.dismiss(toast.id)}>
         ×
       </button>
     </div>

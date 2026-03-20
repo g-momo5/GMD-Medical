@@ -56,7 +56,7 @@ export const visitBlocksConfig: VisitBlockConfig[] = [
   {
     id: 'ecocardiografia',
     component: 'Ecocardiografia',
-    ambulatori: [1] // Solo Ambulatorio Dislipidemie (ID 1)
+    ambulatori: [] // Blocco disattivato
   },
   {
     id: 'firme-visita',

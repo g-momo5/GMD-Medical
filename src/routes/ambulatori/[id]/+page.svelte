@@ -5,8 +5,19 @@
   import { ambulatorioStore } from '$lib/stores/ambulatorio';
   import { authStore } from '$lib/stores/auth';
   import { sidebarCollapsedStore } from '$lib/stores/sidebar';
+  import { toastStore } from '$lib/stores/toast';
   import { getAllPazienti } from '$lib/db/pazienti';
+  import { getFattoriRischioCVByVisitaIds } from '$lib/db/fattori-rischio-cv';
+  import { getVisiteByAmbulatorio } from '$lib/db/visite';
+  import type { FattoriRischioCV, Visita } from '$lib/db/types';
+  import {
+    parseEsamiEmatici,
+    parseTerapiaIpolipemizzante,
+    parseValutazioneRischioCV
+  } from '$lib/utils/visit-clinical';
+  import { resolveAmbulatorioReportDirectory } from '$lib/utils/report-storage';
   import Card from '$lib/components/Card.svelte';
+  import Icon from '$lib/components/Icon.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
 
   let totalPazienti = 0;
@@ -49,7 +60,7 @@
   $: ambulatorio = $ambulatorioStore.current;
   $: user = $authStore.user;
   $: ambulatorioId = $page.params.id;
-  $: dashboardStats = getDashboardStats(totalPazienti);
+  let dashboardStats: DashboardStats = createEmptyDashboardStats();
 
   const fallbackRiskOrder: RiskLabel[] = ['Molto Alto', 'Alto', 'Moderato', 'Basso'];
   const fallbackComorbidities = ['Diabete', 'Ipertensione', 'Obesità', 'Fumo', 'Familiarità'];
@@ -60,6 +71,13 @@
     { therapy: 'Inibitori PCSK9', count: 0 },
     { therapy: 'Acido Bempedoico', count: 0 }
   ];
+
+  const riskLabelMap: Record<'basso' | 'moderato' | 'alto' | 'molto_alto', RiskLabel> = {
+    basso: 'Basso',
+    moderato: 'Moderato',
+    alto: 'Alto',
+    molto_alto: 'Molto Alto'
+  };
 
   function navigateToVisite() {
     console.log('Navigating to visite, ambulatorioId:', ambulatorioId);
@@ -76,15 +94,38 @@
     goto(`/ambulatori/${ambulatorioId}/visite/nuova?from=dashboard`);
   }
 
-  onMount(async () => {
-    try {
-      const pazienti = await getAllPazienti();
-      totalPazienti = pazienti.length;
-    } catch (error) {
-      console.error('Errore caricamento dati dashboard:', error);
-    } finally {
-      loading = false;
+  function getErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
     }
+
+    if (typeof error === 'string' && error.trim()) {
+      return error;
+    }
+
+    return 'Errore sconosciuto';
+  }
+
+  async function navigateToCartellaReferti() {
+    try {
+      const ambulatorioName = ambulatorio?.nome || `Ambulatorio ${ambulatorioId}`;
+      const reportDirectory = await resolveAmbulatorioReportDirectory(ambulatorioName);
+
+      const [{ mkdir }, { openPath }] = await Promise.all([
+        import('@tauri-apps/plugin-fs'),
+        import('@tauri-apps/plugin-opener')
+      ]);
+
+      await mkdir(reportDirectory, { recursive: true });
+      await openPath(reportDirectory);
+    } catch (error) {
+      console.error('Errore apertura cartella referti:', error);
+      toastStore.show('error', `Impossibile aprire la cartella referti: ${getErrorMessage(error)}`);
+    }
+  }
+
+  onMount(async () => {
+    await loadDashboardData();
   });
 
   const getCurrentGreeting = () => {
@@ -94,7 +135,7 @@
     return 'Buonasera';
   };
 
-  function getDashboardStats(totalPatients: number): DashboardStats {
+  function createEmptyDashboardStats(totalPatients = 0): DashboardStats {
     return {
       totalPatients,
       totalVisits: null,
@@ -110,6 +151,172 @@
       riskStats: [],
       fdrcvStats: []
     };
+  }
+
+  function incrementCounter(counter: Map<string, number>, key: string): void {
+    counter.set(key, (counter.get(key) ?? 0) + 1);
+  }
+
+  function formatPercentage(value: number): string {
+    if (!Number.isFinite(value)) return '0';
+    const rounded = Math.round(value * 10) / 10;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  }
+
+  function getLatestVisiteByPaziente(visite: Visita[]): Visita[] {
+    const latestByPaziente = new Map<number, Visita>();
+
+    for (const visita of visite) {
+      if (!latestByPaziente.has(visita.paziente_id)) {
+        latestByPaziente.set(visita.paziente_id, visita);
+      }
+    }
+
+    return Array.from(latestByPaziente.values());
+  }
+
+  function hasPositiveFumoValue(fumo: string): boolean {
+    const normalized = fumo.trim().toLowerCase();
+    return normalized !== '' && normalized !== 'no' && normalized !== '0' && normalized !== 'false';
+  }
+
+  async function loadDashboardData(): Promise<void> {
+    loading = true;
+
+    try {
+      const parsedAmbulatorioId = Number.parseInt(String(ambulatorioId ?? ''), 10);
+      if (!Number.isInteger(parsedAmbulatorioId)) {
+        throw new Error('ID ambulatorio non valido');
+      }
+
+      const [allPazienti, visite] = await Promise.all([
+        getAllPazienti(),
+        getVisiteByAmbulatorio(parsedAmbulatorioId)
+      ]);
+
+      const pazientiAmbulatorio = allPazienti.filter(
+        (paziente) => paziente.ambulatorio_id === parsedAmbulatorioId
+      );
+      totalPazienti = pazientiAmbulatorio.length;
+
+      const latestVisite = getLatestVisiteByPaziente(visite);
+      const fattoriRows = await getFattoriRischioCVByVisitaIds(latestVisite.map((visita) => visita.id));
+      const fattoriByVisitaId = new Map<number, FattoriRischioCV>(
+        fattoriRows.map((fattori) => [fattori.visita_id, fattori])
+      );
+
+      let patientsAtTarget = 0;
+      let patientsNotAtTarget = 0;
+      const pcsk9Stats = {
+        total: 0,
+        repatha: 0,
+        praluent: 0,
+        leqvio: 0
+      };
+      const therapyCounter = new Map<string, number>();
+      const riskCounter = new Map<RiskLabel, number>(
+        fallbackRiskOrder.map((risk) => [risk, 0])
+      );
+      const comorbidityCounter = new Map<string, number>(
+        fallbackComorbidities.map((label) => [label, 0])
+      );
+
+      for (const visita of latestVisite) {
+        const esami = parseEsamiEmatici(visita.esami_ematici);
+        const valutazione = parseValutazioneRischioCV(visita.valutazione_rischio_cv, esami);
+        if (valutazione.status === 'raggiunto') {
+          patientsAtTarget += 1;
+        } else if (valutazione.status === 'non_raggiunto') {
+          patientsNotAtTarget += 1;
+        }
+
+        if (valutazione.rischio && riskLabelMap[valutazione.rischio]) {
+          const label = riskLabelMap[valutazione.rischio];
+          riskCounter.set(label, (riskCounter.get(label) ?? 0) + 1);
+        }
+
+        const terapia = parseTerapiaIpolipemizzante(visita.terapia_ipolipemizzante);
+        const hasRepatha = terapia.repatha.enabled;
+        const hasPraluent = terapia.praluent.enabled;
+        const hasLeqvio = terapia.leqvio.enabled;
+        const hasPcsk9 = hasRepatha || hasPraluent || hasLeqvio;
+
+        if (hasRepatha) pcsk9Stats.repatha += 1;
+        if (hasPraluent) pcsk9Stats.praluent += 1;
+        if (hasLeqvio) pcsk9Stats.leqvio += 1;
+        if (hasPcsk9) {
+          pcsk9Stats.total += 1;
+          incrementCounter(therapyCounter, 'Inibitori PCSK9');
+        }
+
+        if (terapia.statine.enabled && terapia.ezetimibe.enabled) {
+          incrementCounter(therapyCounter, 'Statina + Ezetimibe');
+        } else if (terapia.statine.enabled) {
+          incrementCounter(therapyCounter, 'Statina');
+        } else if (terapia.ezetimibe.enabled) {
+          incrementCounter(therapyCounter, 'Ezetimibe');
+        }
+
+        if (terapia.acido_bempedoico.enabled) {
+          incrementCounter(therapyCounter, 'Acido Bempedoico');
+        }
+
+        const fattori = fattoriByVisitaId.get(visita.id);
+        if (!fattori) {
+          continue;
+        }
+
+        if (fattori.diabete) {
+          comorbidityCounter.set('Diabete', (comorbidityCounter.get('Diabete') ?? 0) + 1);
+        }
+        if (fattori.ipertensione) {
+          comorbidityCounter.set('Ipertensione', (comorbidityCounter.get('Ipertensione') ?? 0) + 1);
+        }
+        if (fattori.obesita) {
+          comorbidityCounter.set('Obesità', (comorbidityCounter.get('Obesità') ?? 0) + 1);
+        }
+        if (hasPositiveFumoValue(fattori.fumo)) {
+          comorbidityCounter.set('Fumo', (comorbidityCounter.get('Fumo') ?? 0) + 1);
+        }
+        if (fattori.familiarita) {
+          comorbidityCounter.set('Familiarità', (comorbidityCounter.get('Familiarità') ?? 0) + 1);
+        }
+      }
+
+      const totalPatientsForPercentage = Math.max(totalPazienti, 1);
+      const topTherapyStats = Array.from(therapyCounter.entries())
+        .map(([therapy, count]) => ({ therapy, count }))
+        .filter((item) => item.count > 0)
+        .sort((left, right) => right.count - left.count || left.therapy.localeCompare(right.therapy));
+      const riskStats = fallbackRiskOrder.map((risk) => ({
+        risk,
+        count: riskCounter.get(risk) ?? 0
+      }));
+      const fdrcvStats = fallbackComorbidities.map((label) => {
+        const count = comorbidityCounter.get(label) ?? 0;
+        return {
+          label,
+          count,
+          percentage: formatPercentage((count / totalPatientsForPercentage) * 100)
+        };
+      });
+
+      dashboardStats = {
+        totalPatients: totalPazienti,
+        totalVisits: visite.length,
+        patientsAtTarget,
+        patientsNotAtTarget,
+        pcsk9Stats,
+        topTherapyStats,
+        riskStats,
+        fdrcvStats
+      };
+    } catch (error) {
+      console.error('Errore caricamento dati dashboard:', error);
+      dashboardStats = createEmptyDashboardStats(totalPazienti);
+    } finally {
+      loading = false;
+    }
   }
 
   function getTopTherapyItems(items: TherapyStat[]): TherapyStat[] {
@@ -150,10 +357,7 @@
           <Card clickable hover on:click={navigateToCercaPaziente}>
             <div class="action-card">
               <div class="action-icon icon-container">
-                <svg class="icon-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <circle cx="11" cy="11" r="7"/>
-                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                </svg>
+                <Icon name="search" size={48} strokeWidth={1.5} />
               </div>
               <div class="action-info">
                 <div class="action-title">Cerca Paziente</div>
@@ -165,13 +369,7 @@
           <Card clickable hover on:click={navigateToVisite}>
             <div class="action-card">
               <div class="action-icon icon-container">
-                <svg class="icon-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                  <line x1="16" y1="13" x2="8" y2="13"/>
-                  <line x1="16" y1="17" x2="8" y2="17"/>
-                  <polyline points="10 9 9 9 8 9"/>
-                </svg>
+                <Icon name="file-text" size={48} strokeWidth={1.5} />
               </div>
               <div class="action-info">
                 <div class="action-title">Archivio Visite</div>
@@ -183,12 +381,7 @@
           <Card clickable hover on:click={navigateToNuovaVisita}>
             <div class="action-card">
               <div class="action-icon icon-container">
-                <svg class="icon-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                  <line x1="12" y1="11" x2="12" y2="17"/>
-                  <line x1="9" y1="14" x2="15" y2="14"/>
-                </svg>
+                <Icon name="file-plus" size={48} strokeWidth={1.5} />
               </div>
               <div class="action-info">
                 <div class="action-title">Nuova Visita</div>
@@ -197,37 +390,27 @@
             </div>
           </Card>
 
-          <Card clickable hover padding="lg">
-            <div class="action-card disabled">
+          <Card clickable hover on:click={navigateToCartellaReferti}>
+            <div class="action-card">
               <div class="action-icon icon-container">
-                <svg class="icon-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                  <line x1="16" y1="2" x2="16" y2="6"/>
-                  <line x1="8" y1="2" x2="8" y2="6"/>
-                  <line x1="3" y1="10" x2="21" y2="10"/>
-                </svg>
+                <Icon name="folder-open" size={48} strokeWidth={1.5} />
               </div>
               <div class="action-info">
-                <div class="action-title">Nuovo Appuntamento</div>
-                <div class="action-description">Prenota un appuntamento</div>
+                <div class="action-title">Cartella Referti</div>
+                <div class="action-description">Apri la cartella dove vengono salvati i referti</div>
               </div>
-              <span class="badge-soon">Presto</span>
             </div>
           </Card>
 
           <Card clickable hover padding="lg">
             <div class="action-card disabled">
               <div class="action-icon icon-container">
-                <svg class="icon-svg" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="transform: rotate(45deg); transform-origin: 50% 50%;">
-                  <defs>
-                    <clipPath id="pill-half-blue">
-                      <rect x="3" y="9" width="9" height="6"/>
-                    </clipPath>
-                  </defs>
-                  <rect x="3" y="9" width="18" height="6" rx="3" fill="currentColor" clip-path="url(#pill-half-blue)"/>
-                  <rect x="3" y="9" width="18" height="6" rx="3"/>
-                  <line x1="12" y1="9" x2="12" y2="15"/>
-                </svg>
+                <Icon
+                  name="pill"
+                  size={56}
+                  strokeWidth={1.5}
+                  style="transform: rotate(45deg); transform-origin: 50% 50%;"
+                />
               </div>
               <div class="action-info">
                 <div class="action-title">Nuova Prescrizione</div>
@@ -345,11 +528,7 @@
         <Card padding="lg">
           <div class="empty-state">
             <div class="empty-icon">
-              <svg class="icon-svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <line x1="18" y1="20" x2="18" y2="10"/>
-                <line x1="12" y1="20" x2="12" y2="4"/>
-                <line x1="6" y1="20" x2="6" y2="14"/>
-              </svg>
+              <Icon name="chart" size={64} strokeWidth={1.5} />
             </div>
             <p class="empty-text">Nessuna attività recente da visualizzare</p>
             <p class="empty-subtext">Le attività appariranno qui quando ci saranno nuovi eventi</p>

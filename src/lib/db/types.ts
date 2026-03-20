@@ -91,6 +91,7 @@ export type EsameEmaticoKey =
   | 'cpk';
 
 export interface EsamiEmaticiValues {
+  data_ee: string;
   hb: string;
   plt: string;
   creatinina: string;
@@ -257,6 +258,55 @@ export interface CreateVisitaInput {
 
 export interface UpdateVisitaInput extends Partial<CreateVisitaInput> {
   id: number;
+}
+
+export type OrigineAppuntamento = 'manuale' | 'followup_visita';
+
+export interface Appuntamento {
+  id: number;
+  ambulatorio_id: number;
+  paziente_id: number;
+  data_ora_inizio: string;
+  durata_minuti: number;
+  motivo?: string | null;
+  origine: OrigineAppuntamento;
+  source_visita_id?: number | null;
+  created_at: string;
+  updated_at: string;
+  // Joined fields
+  paziente_nome?: string;
+  paziente_cognome?: string;
+  paziente_codice_fiscale?: string;
+}
+
+export interface CreateAppuntamentoManualeInput {
+  ambulatorio_id: number;
+  paziente_id: number;
+  data_ora_inizio: string;
+  durata_minuti?: number;
+  motivo?: string;
+}
+
+export interface UpdateAppuntamentoInput {
+  id: number;
+  paziente_id?: number;
+  data_ora_inizio?: string;
+  durata_minuti?: number;
+  motivo?: string;
+}
+
+export interface AppuntamentoSlotDisponibilita {
+  date: string;
+  time: string;
+  dateTime: string;
+  available: boolean;
+  appuntamento: Appuntamento | null;
+}
+
+export interface SlotAvailabilityCheck {
+  available: boolean;
+  conflict: Appuntamento | null;
+  suggestedTimes: string[];
 }
 
 export interface FattoriRischioCV {

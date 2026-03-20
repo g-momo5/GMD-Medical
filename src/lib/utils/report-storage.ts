@@ -27,6 +27,22 @@ export async function getReportBaseDirectory(): Promise<string> {
   return getDefaultReportBaseDirectory();
 }
 
+export function sanitizeReportFolderName(value: string): string {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9 _-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return normalized || 'Ambulatorio';
+}
+
+export async function resolveAmbulatorioReportDirectory(ambulatorioName: string): Promise<string> {
+  const baseDirectory = await getReportBaseDirectory();
+  return join(baseDirectory, sanitizeReportFolderName(ambulatorioName));
+}
+
 export function setReportBaseDirectory(path: string): void {
   if (typeof window === 'undefined') {
     return;

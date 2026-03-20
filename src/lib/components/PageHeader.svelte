@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import Icon from './Icon.svelte';
 
   export let title: string;
   export let subtitle: string = '';
@@ -65,9 +66,9 @@
           class="btn-back"
           on:click={handleBackClick}
           title="Torna indietro"
-          style="width: {buttonSize}px; height: {buttonSize}px; font-size: {buttonFontSize}rem;"
+          style="width: {buttonSize}px; height: {buttonSize}px;"
         >
-          ←
+          <Icon name="arrow-left" size={buttonFontSize * 16} strokeWidth={2.25} />
         </button>
       {/if}
       <div class="header-text">

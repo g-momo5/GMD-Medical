@@ -130,6 +130,9 @@
     bind:this={contentEditableDiv}
     {id}
     contenteditable="true"
+    role="textbox"
+    tabindex="0"
+    aria-multiline="true"
     class="rich-textarea"
     style="min-height: {rows * 1.5}em;"
     on:input={handleInput}
@@ -138,7 +141,7 @@
     on:focus
     on:keydown
     data-placeholder={placeholder}
-  />
+  ></div>
 </div>
 
 <style>
@@ -176,15 +179,15 @@
   }
 
   /* Stili per il testo formattato */
-  .rich-textarea strong {
+  .rich-textarea :global(strong) {
     font-weight: 700;
   }
 
-  .rich-textarea em {
+  .rich-textarea :global(em) {
     font-style: italic;
   }
 
-  .rich-textarea u {
+  .rich-textarea :global(u) {
     text-decoration: underline;
   }
 </style>

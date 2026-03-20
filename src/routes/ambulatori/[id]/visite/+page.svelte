@@ -18,6 +18,7 @@
   import Button from '$lib/components/Button.svelte';
   import VisitFormModal from '$lib/components/VisitFormModal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
+  import Icon from '$lib/components/Icon.svelte';
   import type { Visita } from '$lib/db/types';
 
   $: ambulatorio = $ambulatorioStore.current;
@@ -132,19 +133,17 @@
     }
   }
 
-  function formatDateTime(dateString: string): string {
-    const date = new Date(dateString);
-    return new Intl.DateTimeFormat('it-IT', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    }).format(date);
-  }
-
   function formatDate(dateString: string): string {
+    const directDateMatch = dateString.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (directDateMatch) {
+      return `${directDateMatch[3]}/${directDateMatch[2]}/${directDateMatch[1]}`;
+    }
+
     const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) {
+      return dateString;
+    }
+
     return new Intl.DateTimeFormat('it-IT', {
       day: '2-digit',
       month: '2-digit',
@@ -188,12 +187,7 @@
     <div slot="actions">
       <button type="button" class="btn-icon-text" on:click={handleNewVisit}>
         <span class="icon">
-          <svg class="icon-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-            <line x1="9" y1="13" x2="15" y2="13"/>
-            <line x1="9" y1="17" x2="15" y2="17"/>
-          </svg>
+          <Icon name="file-plus" size={24} />
         </span>
         <span class="text">Nuova Visita</span>
       </button>
@@ -220,12 +214,7 @@
       {:else if visite.length === 0}
         <div class="empty-state">
           <div class="empty-icon">
-            <svg class="icon-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-              <line x1="9" y1="13" x2="15" y2="13"/>
-              <line x1="9" y1="17" x2="15" y2="17"/>
-            </svg>
+            <Icon name="file-text" size={48} />
           </div>
           <h3 class="empty-title">
             {searchTerm ? 'Nessuna visita trovata' : 'Nessuna visita registrata'}
@@ -254,15 +243,7 @@
               {#each visite as visita (visita.id)}
                 <tr>
                   <td>
-                    <div class="date-cell">
-                      <div class="date-main">{formatDate(visita.data_visita)}</div>
-                      <div class="date-time">
-                        {new Date(visita.data_visita).toLocaleTimeString('it-IT', {
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}
-                      </div>
-                    </div>
+                    <div class="date-main">{formatDate(visita.data_visita)}</div>
                   </td>
                   <td>
                     <div class="patient-cell">
@@ -291,14 +272,14 @@
                         on:click={() => handleEditVisit(visita)}
                         title="Modifica"
                       >
-                        ✏️
+                        <Icon name="pencil" size={16} />
                       </button>
                       <button
                         class="btn-icon"
                         on:click={() => openDeleteModal(visita)}
                         title="Elimina"
                       >
-                        🗑️
+                        <Icon name="trash" size={16} />
                       </button>
                     </div>
                   </td>
@@ -327,7 +308,7 @@
   <p style="margin-bottom: var(--space-6);">
     Sei sicuro di voler eliminare la visita del paziente
     <strong>{visitToDelete?.paziente_cognome} {visitToDelete?.paziente_nome}</strong>
-    del {visitToDelete ? formatDateTime(visitToDelete.data_visita) : ''}?<br />
+    del {visitToDelete ? formatDate(visitToDelete.data_visita) : ''}?<br />
     Questa azione non può essere annullata.
   </p>
   <div style="display: flex; gap: var(--space-3); justify-content: flex-end;">
@@ -495,20 +476,9 @@
     background: var(--color-bg-secondary);
   }
 
-  .date-cell {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
   .date-main {
     font-weight: 500;
     color: var(--color-text-primary);
-  }
-
-  .date-time {
-    font-size: var(--text-xs);
-    color: var(--color-text-secondary);
   }
 
   .patient-cell {

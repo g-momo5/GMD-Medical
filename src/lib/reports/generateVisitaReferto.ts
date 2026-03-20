@@ -6,6 +6,7 @@ import { rischioCVOptions } from '$lib/configs/clinical-options';
 import { getAmbulatorioById } from '$lib/db/ambulatori';
 import type {
   EsamiEmaticiValues,
+  FHAssessment,
   FirmeVisita,
   Paziente,
   PianificazioneFollowUp,
@@ -13,7 +14,7 @@ import type {
   TitoloFirmaMedico,
   ValutazioneRischioCardiovascolare
 } from '$lib/db/types';
-import { getReportBaseDirectory } from '$lib/utils/report-storage';
+import { getReportBaseDirectory, sanitizeReportFolderName } from '$lib/utils/report-storage';
 
 const REPORT_TITLE = 'AMBULATORIO CARDIOLOGICO DELLE DISLIPIDEMIE';
 const TEMPLATE_URL = new URL('../templates/template_dislip.docx', import.meta.url).href;
@@ -57,6 +58,7 @@ export type GenerateVisitaRefertoInput = {
   paziente: Paziente;
   formData: ReportFormData;
   fattoriRischio: ReportFattoriRischio;
+  fhAssessment: FHAssessment;
   anamnesiPatologicaRemota: string;
   terapiaIpolipemizzante: TerapiaIpolipemizzante;
   terapiaDomiciliare: string;
@@ -79,7 +81,7 @@ const esamiTemplateOrder: Array<{
   unit: string;
 }> = [
   { key: 'hb', label: 'Hb', unit: 'g/dL' },
-  { key: 'plt', label: 'PLT', unit: '10^3/uL' },
+  { key: 'plt', label: 'PLT', unit: '/uL' },
   { key: 'creatinina', label: 'Creatinina', unit: 'mg/dL' },
   { key: 'egfr', label: 'eGFR', unit: 'mL/min' },
   { key: 'colesterolo_totale', label: 'Colesterolo totale', unit: 'mg/dL' },
@@ -95,10 +97,6 @@ const esamiTemplateOrder: Array<{
   { key: 'bilirubina_totale', label: 'Bilirubina totale', unit: 'mg/dL' },
   { key: 'cpk', label: 'CPK', unit: 'U/L' }
 ];
-
-function keepPlaceholder(tag: string): string {
-  return `{${tag}}`;
-}
 
 function cleanupMarkdown(value: string): string {
   return value
@@ -183,20 +181,7 @@ function sanitizeFileName(value: string): string {
     .replace(/^_+|_+$/g, '');
 }
 
-function sanitizeFolderName(value: string): string {
-  const normalized = value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9 _-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return normalized || 'Ambulatorio';
-}
-
 function buildConditionalPair(
-  headerKey: string,
-  valueKey: string,
   headerLabel: string,
   content: string
 ): ReportPlaceholderPair {
@@ -204,8 +189,8 @@ function buildConditionalPair(
 
   if (!normalizedContent) {
     return {
-      header: keepPlaceholder(headerKey),
-      value: keepPlaceholder(valueKey)
+      header: '',
+      value: ''
     };
   }
 
@@ -276,39 +261,36 @@ function buildTerapiaIpolipemizzanteList(terapia: TerapiaIpolipemizzante): strin
   const items: string[] = [];
 
   if (terapia.statine.enabled && terapia.statine.dose) {
-    items.push(`Statina (${terapia.statine.dose})`);
+    items.push(terapia.statine.dose.trim());
   }
 
   if (terapia.ezetimibe.enabled) {
-    items.push(
-      terapia.ezetimibe.modalita
-        ? `Ezetimibe (${terapia.ezetimibe.modalita})`
-        : 'Ezetimibe'
-    );
+    const mode = terapia.ezetimibe.modalita.trim();
+    items.push(mode && mode !== 'Senza associazione' ? `Ezetimibe - ${mode}` : 'Ezetimibe');
   }
 
   if (terapia.fibrati.enabled && terapia.fibrati.dose) {
-    items.push(`Fibrati (${terapia.fibrati.dose})`);
+    items.push(terapia.fibrati.dose.trim());
   }
 
   if (terapia.omega3.enabled && terapia.omega3.dose) {
-    items.push(`Omega 3 (${terapia.omega3.dose})`);
+    items.push(`Omega 3 ${terapia.omega3.dose.trim()}`);
   }
 
   if (terapia.acido_bempedoico.enabled && terapia.acido_bempedoico.dose) {
-    items.push(`Acido bempedoico (${terapia.acido_bempedoico.dose})`);
+    items.push(`Acido bempedoico ${terapia.acido_bempedoico.dose.trim()}`);
   }
 
   if (terapia.repatha.enabled && terapia.repatha.dose) {
-    items.push(`Repatha (${terapia.repatha.dose})`);
+    items.push(`Evolocumab ${terapia.repatha.dose.trim()}`);
   }
 
   if (terapia.praluent.enabled && terapia.praluent.dose) {
-    items.push(`Praluent (${terapia.praluent.dose})`);
+    items.push(`Alirocumab ${terapia.praluent.dose.trim()}`);
   }
 
   if (terapia.leqvio.enabled && terapia.leqvio.dose) {
-    items.push(`Leqvio (${terapia.leqvio.dose})`);
+    items.push(`Inclisiran ${terapia.leqvio.dose.trim()}`);
   }
 
   return items.join(', ');
@@ -322,16 +304,24 @@ function buildEsamiEmaticiList(esami: EsamiEmaticiValues): string {
         return '';
       }
 
+      if (analyte.key === 'plt') {
+        const numericValue = Number.parseFloat(value.replace(',', '.'));
+        if (Number.isFinite(numericValue)) {
+          const normalizedValue = String(Math.round(numericValue * 1000));
+          return `${analyte.label} ${normalizedValue} ${analyte.unit}`;
+        }
+      }
+
       return `${analyte.label} ${value} ${analyte.unit}`;
     })
     .filter(Boolean);
 
-  return items.length > 0 ? items.join(', ') : 'Non in visione';
+  return items.length > 0 ? items.join(', ') : '';
 }
 
 function buildRischioLabel(rischio: ValutazioneRischioCardiovascolare['rischio']): string {
   const option = rischioCVOptions.find((entry) => entry.value === rischio);
-  return option?.label || 'Non definita';
+  return option?.label || '';
 }
 
 function buildTargetLabel(valutazione: ValutazioneRischioCardiovascolare): string {
@@ -347,7 +337,38 @@ function buildTargetLabel(valutazione: ValutazioneRischioCardiovascolare): strin
     return `Target LDL < ${valutazione.targetLdl} mg/dL`;
   }
 
-  return 'Target LDL < xx mg/dL';
+  return '';
+}
+
+function buildFhDiagnosisLabel(classification: FHAssessment['classification']): string {
+  switch (classification) {
+    case 'Definita':
+      return 'diagnosi definita';
+    case 'Probabile':
+      return 'diagnosi probabile';
+    case 'Possibile':
+      return 'diagnosi possibile';
+    case 'Improbabile':
+    default:
+      return 'diagnosi improbabile';
+  }
+}
+
+function buildProssimaVisitaLabel(pianificazioneFollowUp: PianificazioneFollowUp): string {
+  const formattedDate = pianificazioneFollowUp.dataOraProssimaVisita
+    ? formatDateTime(pianificazioneFollowUp.dataOraProssimaVisita)
+    : '';
+  const motivo = cleanupMarkdown(pianificazioneFollowUp.motivoProssimaVisita);
+
+  if (!formattedDate) {
+    return '';
+  }
+
+  if (!motivo) {
+    return formattedDate;
+  }
+
+  return `${formattedDate} - ${motivo}`;
 }
 
 function buildReportData(input: GenerateVisitaRefertoInput): Record<string, string> {
@@ -355,38 +376,36 @@ function buildReportData(input: GenerateVisitaRefertoInput): Record<string, stri
   const anamnesiPatologicaRemota = cleanupMarkdown(input.anamnesiPatologicaRemota);
   const terapiaIpolipemizzante = buildTerapiaIpolipemizzanteList(input.terapiaIpolipemizzante);
   const terapiaDomiciliare = cleanupMarkdown(input.terapiaDomiciliare);
+  const hasFattoriRischio = fattoriRischioList.trim().length > 0;
+  const hasAnamnesiPatologicaRemota = anamnesiPatologicaRemota.trim().length > 0;
 
-  const fattoriPair = buildConditionalPair(
-    'hfdrcv',
-    'fdrcv',
-    'Fattori di rischio CV:',
-    fattoriRischioList
-  );
-  const aprPair = buildConditionalPair(
-    'hapr',
-    'apr',
-    'Anamnesi patologica remota:',
-    anamnesiPatologicaRemota
-  );
+  const fattoriPair =
+    !hasFattoriRischio && !hasAnamnesiPatologicaRemota
+      ? { header: 'Non precedenti anamnestici di rilievo.', value: '' }
+      : buildConditionalPair('Fattori di rischio CV:', fattoriRischioList);
+
+  const aprPair = buildConditionalPair('Anamnesi patologica remota:', anamnesiPatologicaRemota);
   const terapiaIpolipemizzantePair = buildConditionalPair(
-    'htpipo',
-    'tpipo',
     'Terapia ipolipemizzante:',
     terapiaIpolipemizzante
   );
   const terapiaDomiciliarePair = buildConditionalPair(
-    'hresttp',
-    'resttp',
     'Restante terapia domiciliare:',
     terapiaDomiciliare
   );
+  const hasFhAssessment = input.fhAssessment.enabled;
+  const fhHeader = hasFhAssessment ? 'Ipercolesterolemia familiare:' : '';
+  const fhScore = hasFhAssessment
+    ? `Dutch Lipid Score ${input.fhAssessment.totalScore} - ${buildFhDiagnosisLabel(input.fhAssessment.classification)}`
+    : '';
 
   const cardiologoNome = input.firmeVisita.cardiologoNome.trim();
   const specializzandi: ReportSpecializzando[] = input.firmeVisita.mediciInFormazione
-    .map((medico) => ({
-      nome: medico.nome.trim(),
-      titolo: medico.nome.trim() ? medico.titolo : ''
-    }))
+    .map((medico): ReportSpecializzando => {
+      const nome = medico.nome.trim();
+      const titolo: TitoloToken = nome ? medico.titolo : '';
+      return { nome, titolo };
+    })
     .filter((medico) => medico.nome)
     .slice(0, 3);
 
@@ -400,10 +419,10 @@ function buildReportData(input: GenerateVisitaRefertoInput): Record<string, stri
     comune_nascita: input.paziente.luogo_nascita,
     data_nascita: formatDate(input.paziente.data_nascita),
     codice_fiscale: input.paziente.codice_fiscale,
-    telefono: input.paziente.telefono?.trim() || '-',
-    peso: input.formData.peso.trim() || '-',
-    altezza: input.formData.altezza.trim() || '-',
-    bmi: input.formData.bmi.trim() || '-',
+    telefono: input.paziente.telefono?.trim() || '',
+    peso: input.formData.peso.trim() || '',
+    altezza: input.formData.altezza.trim() || '',
+    bmi: input.formData.bmi.trim() || '',
     tipo_visita: input.formData.tipo_visita,
     motivo_visita: cleanupMarkdown(input.formData.motivo),
     hfdrcv: fattoriPair.header,
@@ -414,22 +433,27 @@ function buildReportData(input: GenerateVisitaRefertoInput): Record<string, stri
     tpipo: terapiaIpolipemizzantePair.value,
     hresttp: terapiaDomiciliarePair.header,
     resttp: terapiaDomiciliarePair.value,
+    ipercol: fhHeader,
+    ipercol_score: fhScore,
+    data_ee: input.esamiEmatici.data_ee ? formatDate(input.esamiEmatici.data_ee) : '',
     ee: buildEsamiEmaticiList(input.esamiEmatici),
     rcv: buildRischioLabel(input.valutazioneRischioCV.rischio),
     target: buildTargetLabel(input.valutazioneRischioCV),
     conclusioni: cleanupMarkdown(input.conclusioni),
-    proxvisita: input.pianificazioneFollowUp.dataOraProssimaVisita
-      ? formatDateTime(input.pianificazioneFollowUp.dataOraProssimaVisita)
-      : 'Non programmata',
-    proxee: cleanupMarkdown(input.pianificazioneFollowUp.esamiEmaticiDaFare) || 'Non specificati',
+    proxvisita: buildProssimaVisitaLabel(input.pianificazioneFollowUp),
+    proxee: cleanupMarkdown(input.pianificazioneFollowUp.esamiEmaticiDaFare) || '',
     dottssa: cardiologoNome ? formatDoctorTitle(input.firmeVisita.cardiologoTitolo) : '',
     cardiologo: cardiologoNome,
+    nome_cardiologo: cardiologoNome,
     dottssasp1: formatDoctorTitle(specializzandi[0]?.titolo || ''),
     specializzando1: specializzandi[0]?.nome || '',
     dottssasp2: formatDoctorTitle(specializzandi[1]?.titolo || ''),
     specializzando2: specializzandi[1]?.nome || '',
     dottssasp3: formatDoctorTitle(specializzandi[2]?.titolo || ''),
-    specializzando3: specializzandi[2]?.nome || ''
+    specializzando3: specializzandi[2]?.nome || '',
+    nome_specializzando1: specializzandi[0]?.nome || '',
+    nome_specializzando2: specializzandi[1]?.nome || '',
+    nome_specializzando3: specializzandi[2]?.nome || ''
   };
 }
 
@@ -520,7 +544,8 @@ function renderTemplate(template: ArrayBuffer, data: Record<string, string>): Ui
   const zip = new PizZip(template);
   const doc = new Docxtemplater(zip, {
     paragraphLoop: true,
-    linebreaks: true
+    linebreaks: true,
+    nullGetter: () => ''
   });
 
   doc.render(data);
@@ -537,7 +562,7 @@ function ensureDocxExtension(filePath: string): string {
 async function resolveAmbulatorioDirectory(input: GenerateVisitaRefertoInput): Promise<string> {
   const baseDirectory = await getReportBaseDirectory();
   const ambulatorio = await getAmbulatorioById(input.paziente.ambulatorio_id);
-  const ambulatorioNome = sanitizeFolderName(
+  const ambulatorioNome = sanitizeReportFolderName(
     ambulatorio?.nome || `Ambulatorio ${input.paziente.ambulatorio_id}`
   );
 

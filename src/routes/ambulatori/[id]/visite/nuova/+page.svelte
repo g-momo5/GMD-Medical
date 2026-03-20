@@ -6,12 +6,15 @@
   import { sidebarCollapsedStore } from '$lib/stores/sidebar';
   import { toastStore } from '$lib/stores/toast';
   import { getAllPazienti } from '$lib/db/pazienti';
-  import { getPreviousEsamiEmaticiByPaziente } from '$lib/db/visite';
+  import { getFattoriRischioCVByVisitaId } from '$lib/db/fattori-rischio-cv';
+  import { checkAppuntamentoSlotAvailability } from '$lib/db/appuntamenti';
+  import { getPreviousEsamiEmaticiByPaziente, getVisiteByPaziente } from '$lib/db/visite';
   import { createVisitaCompleta } from '$lib/db/visite-complete';
-  import type { DiabeteTipo, Paziente, PreviousEsamiEmaticiMap } from '$lib/db/types';
+  import type { DiabeteTipo, Paziente, PreviousEsamiEmaticiMap, Visita } from '$lib/db/types';
   import Card from '$lib/components/Card.svelte';
   import Input from '$lib/components/Input.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
+  import Icon from '$lib/components/Icon.svelte';
   import PazienteFormModal from '$lib/components/PazienteFormModal.svelte';
   import FattoriRischioCV from '$lib/components/visit-blocks/FattoriRischioCV.svelte';
   import IpercolesterolemiaFamiliareFH from '$lib/components/visit-blocks/IpercolesterolemiaFamiliareFH.svelte';
@@ -34,8 +37,12 @@
     createEmptyValutazioneRischioCV,
     isValutazioneRischioCVEqual,
     normalizeFHAssessment,
-    normalizeValutazioneRischioCV,
     normalizeTerapiaIpolipemizzante,
+    normalizeValutazioneRischioCV,
+    parseFHAssessment,
+    parseFirmeVisita,
+    parseTerapiaIpolipemizzante,
+    parseValutazioneRischioCV,
     serializeEsamiEmatici,
     serializeFirmeVisita,
     serializeFHAssessment,
@@ -51,22 +58,129 @@
   $: cameFromDashboard = $page.url.searchParams.get('from') === 'dashboard';
   $: preselectedPazienteId = parseInt($page.url.searchParams.get('pazienteId') || '0');
 
-  type PatientLookupField = 'nome' | 'cognome' | 'codice_fiscale';
-  type PatientLookupState = Record<PatientLookupField, string>;
-  const MIN_PATIENT_LOOKUP_LENGTH = 2;
+  type VisitFlowStep = 'select_patient' | 'compile_visit';
+  type SelectPazienteOptions = {
+    prefillFromHistory?: boolean;
+  };
+  type EcocardiografiaState = {
+    vs_dtd: string;
+    vs_siv: string;
+    vs_pp: string;
+    vs_rwt: string;
+    vs_fe: string;
+    vd_rvd1: string;
+    vd_tapse: string;
+    vd_s_prime: string;
+    as_a4c: string;
+    as_lavi: string;
+    ad_a4c: string;
+    ao_lvot: string;
+    ao_radice: string;
+    ao_giunto: string;
+    ao_ascendente: string;
+    ao_arco: string;
+    ao_discendente: string;
+    ao_addominale: string;
+    va_vmax: string;
+    va_gmax: string;
+    va_gmed: string;
+    va_pht: string;
+    va_ava_vti: string;
+    va_ava_plan: string;
+    vm_gmed: string;
+    vm_pisar: string;
+    vm_eroa: string;
+    vt_gmax: string;
+    vt_vmax: string;
+    vci: string;
+    referto: string;
+  };
+  const EXISTING_PATIENT_DEFAULT_VISIT_TYPE = 'Controllo';
+
+  function getTodayVisitDate(): string {
+    return new Date().toISOString().split('T')[0];
+  }
+
+  function createEmptyFattoriRischio() {
+    return {
+      familiarita: false,
+      familiarita_note: '',
+      ipertensione: false,
+      diabete: false,
+      diabete_durata: '',
+      diabete_tipo: '' as DiabeteTipo,
+      dislipidemia: false,
+      obesita: false,
+      fumo: '',
+      fumo_ex_eta: ''
+    };
+  }
+
+  function createEmptyEcocardiografia(): EcocardiografiaState {
+    return {
+      vs_dtd: '',
+      vs_siv: '',
+      vs_pp: '',
+      vs_rwt: '',
+      vs_fe: '',
+      vd_rvd1: '',
+      vd_tapse: '',
+      vd_s_prime: '',
+      as_a4c: '',
+      as_lavi: '',
+      ad_a4c: '',
+      ao_lvot: '',
+      ao_radice: '',
+      ao_giunto: '',
+      ao_ascendente: '',
+      ao_arco: '',
+      ao_discendente: '',
+      ao_addominale: '',
+      va_vmax: '',
+      va_gmax: '',
+      va_gmed: '',
+      va_pht: '',
+      va_ava_vti: '',
+      va_ava_plan: '',
+      vm_gmed: '',
+      vm_pisar: '',
+      vm_eroa: '',
+      vt_gmax: '',
+      vt_vmax: '',
+      vci: '',
+      referto: ''
+    };
+  }
+
+  function parseEcocardiografia(raw?: string | null): EcocardiografiaState {
+    const fallback = createEmptyEcocardiografia();
+    if (!raw) {
+      return fallback;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<Record<keyof EcocardiografiaState, unknown>>;
+      const normalized = createEmptyEcocardiografia();
+      for (const key of Object.keys(fallback) as Array<keyof EcocardiografiaState>) {
+        const value = parsed[key];
+        normalized[key] = typeof value === 'string' ? value : value == null ? '' : String(value);
+      }
+      return normalized;
+    } catch {
+      return fallback;
+    }
+  }
 
   let pazienti: Paziente[] = [];
   let selectedPaziente: Paziente | null = null;
+  let currentStep: VisitFlowStep = 'select_patient';
   let searchTerm = '';
-  let showPatientModal = false;
   let showNewPatientModal = false;
   let filteredPazienti: Paziente[] = [];
-  let patientSuggestions: Paziente[] = [];
-  let hasActivePatientLookup = false;
-  let showPatientSuggestions = false;
   let loading = false;
   let savingWithReport = false;
   let hasAppliedPreselectedPaziente = false;
+  let latestVisitaPrefillRequestKey = '';
 
   // Opzioni per il campo Tipo Visita
   const tipoVisitaOptions = [
@@ -76,7 +190,7 @@
 
   // Form data
   let formData = {
-    data_visita: new Date().toISOString().split('T')[0],
+    data_visita: getTodayVisitDate(),
     tipo_visita: '',
     motivo: '',
     altezza: '',
@@ -91,18 +205,7 @@
   };
 
   // Fattori di Rischio CV
-  let fattoriRischio = {
-    familiarita: false,
-    familiarita_note: '',
-    ipertensione: false,
-    diabete: false,
-    diabete_durata: '',
-    diabete_tipo: '' as DiabeteTipo,
-    dislipidemia: false,
-    obesita: false,
-    fumo: '',
-    fumo_ex_eta: ''
-  };
+  let fattoriRischio = createEmptyFattoriRischio();
 
   let fhAssessment = createEmptyFHAssessment();
 
@@ -124,39 +227,7 @@
   let valutazioneRischioCV = createEmptyValutazioneRischioCV();
 
   // Ecocardiografia
-  let ecocardiografia = {
-    vs_dtd: '',
-    vs_siv: '',
-    vs_pp: '',
-    vs_rwt: '',
-    vs_fe: '',
-    vd_rvd1: '',
-    vd_tapse: '',
-    vd_s_prime: '',
-    as_a4c: '',
-    as_lavi: '',
-    ad_a4c: '',
-    ao_lvot: '',
-    ao_radice: '',
-    ao_giunto: '',
-    ao_ascendente: '',
-    ao_arco: '',
-    ao_discendente: '',
-    ao_addominale: '',
-    va_vmax: '',
-    va_gmax: '',
-    va_gmed: '',
-    va_pht: '',
-    va_ava_vti: '',
-    va_ava_plan: '',
-    vm_gmed: '',
-    vm_pisar: '',
-    vm_eroa: '',
-    vt_gmax: '',
-    vt_vmax: '',
-    vci: '',
-    referto: ''
-  };
+  let ecocardiografia = createEmptyEcocardiografia();
 
   // Conclusioni
   let conclusioni = '';
@@ -166,17 +237,50 @@
   let etaPaziente: number | null = null;
   let sessoPaziente: 'M' | 'F' | 'Altro' | null = null;
   let pesoKg: number | null = null;
-  let patientLookup = createEmptyPatientLookup();
+  const RISK_CV_DEBUG = true;
+  let lastRiskReactiveSnapshot = '';
 
   $: etaPaziente = selectedPaziente ? calculateAge(selectedPaziente.data_nascita) : null;
   $: sessoPaziente = selectedPaziente?.sesso || null;
+  $: if (currentStep === 'compile_visit' && !selectedPaziente) {
+    currentStep = 'select_patient';
+  }
   $: {
     const parsedPeso = formData.peso ? parseFloat(formData.peso) : NaN;
     pesoKg = Number.isFinite(parsedPeso) ? parsedPeso : null;
   }
   $: {
     const normalizedRisk = normalizeValutazioneRischioCV(valutazioneRischioCV, esamiEmatici);
+    if (RISK_CV_DEBUG) {
+      const snapshot = [
+        String(valutazioneRischioCV.rischio || ''),
+        String(normalizedRisk.rischio || ''),
+        normalizedRisk.status,
+        normalizedRisk.statusMessage,
+        String(normalizedRisk.ldlAttuale ?? 'null'),
+        String(esamiEmatici.ldl_diretto || ''),
+        String(esamiEmatici.ldl_calcolato || '')
+      ].join('|');
+
+      if (snapshot !== lastRiskReactiveSnapshot) {
+        lastRiskReactiveSnapshot = snapshot;
+        console.info('[RISK-CV][PAGE] reactive normalize', {
+          before: valutazioneRischioCV,
+          after: normalizedRisk,
+          esami: {
+            ldl_diretto: esamiEmatici.ldl_diretto,
+            ldl_calcolato: esamiEmatici.ldl_calcolato
+          }
+        });
+      }
+    }
     if (!isValutazioneRischioCVEqual(valutazioneRischioCV, normalizedRisk)) {
+      if (RISK_CV_DEBUG) {
+        console.info('[RISK-CV][PAGE] apply normalizedRisk overwrite', {
+          from: valutazioneRischioCV,
+          to: normalizedRisk
+        });
+      }
       valutazioneRischioCV = normalizedRisk;
     }
   }
@@ -214,44 +318,134 @@
   }
 
   $: {
-    const nome = patientLookup.nome.trim().toLowerCase();
-    const cognome = patientLookup.cognome.trim().toLowerCase();
-    const codiceFiscale = patientLookup.codice_fiscale.trim().toLowerCase();
-
-    hasActivePatientLookup =
-      nome.length >= MIN_PATIENT_LOOKUP_LENGTH ||
-      cognome.length >= MIN_PATIENT_LOOKUP_LENGTH ||
-      codiceFiscale.length >= MIN_PATIENT_LOOKUP_LENGTH;
-
-    if (!hasActivePatientLookup) {
-      patientSuggestions = [];
-    } else {
-      patientSuggestions = pazienti
-        .filter(
-          (p) =>
-            (nome.length < MIN_PATIENT_LOOKUP_LENGTH || p.nome.toLowerCase().includes(nome)) &&
-            (cognome.length < MIN_PATIENT_LOOKUP_LENGTH ||
-              p.cognome.toLowerCase().includes(cognome)) &&
-            (codiceFiscale.length < MIN_PATIENT_LOOKUP_LENGTH ||
-              p.codice_fiscale.toLowerCase().includes(codiceFiscale))
-        )
-        .slice(0, 8);
-    }
-  }
-  $: {
-    const nextLookupKey = selectedPaziente ? `${selectedPaziente.id}:${formData.data_visita}` : '';
+    const esamiReferenceDate = (esamiEmatici.data_ee || '').trim() || formData.data_visita;
+    const nextLookupKey = selectedPaziente ? `${selectedPaziente.id}:${esamiReferenceDate}` : '';
     if (previousEsamiLookupKey !== nextLookupKey) {
       previousEsamiLookupKey = nextLookupKey;
       void loadPreviousEsamiEmatici(nextLookupKey);
     }
   }
 
-  function createEmptyPatientLookup(): PatientLookupState {
-    return {
-      nome: '',
-      cognome: '',
-      codice_fiscale: ''
+  function resetVisitState(defaultTipoVisita = ''): void {
+    formData = {
+      data_visita: getTodayVisitDate(),
+      tipo_visita: defaultTipoVisita,
+      motivo: '',
+      altezza: '',
+      peso: '',
+      bmi: '',
+      bsa: '',
+      anamnesi: '',
+      esame_obiettivo: '',
+      diagnosi: '',
+      terapia: '',
+      note: ''
     };
+
+    fattoriRischio = createEmptyFattoriRischio();
+    fhAssessment = createEmptyFHAssessment();
+    anamnesiCardiologica = '';
+    terapiaIpolipemizzante = createEmptyTerapiaIpolipemizzante();
+    terapiaDomiciliare = '';
+    valutazioneOdierna = '';
+    esamiEmatici = createEmptyEsamiEmatici();
+    previousEsamiEmatici = {};
+    valutazioneRischioCV = createEmptyValutazioneRischioCV();
+    ecocardiografia = createEmptyEcocardiografia();
+    conclusioni = '';
+    pianificazioneFollowUp = createEmptyPianificazioneFollowUp();
+    firmeVisita = createEmptyFirmeVisita();
+  }
+
+  function applyLatestVisitaData(latestVisita: Visita): void {
+    formData = {
+      data_visita: getTodayVisitDate(),
+      tipo_visita: EXISTING_PATIENT_DEFAULT_VISIT_TYPE,
+      motivo: latestVisita.motivo || '',
+      altezza: latestVisita.altezza != null ? String(latestVisita.altezza) : '',
+      peso: latestVisita.peso != null ? String(latestVisita.peso) : '',
+      bmi: latestVisita.bmi != null ? String(latestVisita.bmi) : '',
+      bsa: latestVisita.bsa != null ? String(latestVisita.bsa) : '',
+      anamnesi: latestVisita.anamnesi || '',
+      esame_obiettivo: latestVisita.esame_obiettivo || '',
+      diagnosi: latestVisita.diagnosi || '',
+      terapia: latestVisita.terapia || '',
+      note: latestVisita.note || ''
+    };
+
+    anamnesiCardiologica = latestVisita.anamnesi_cardiologica || '';
+    terapiaIpolipemizzante = parseTerapiaIpolipemizzante(latestVisita.terapia_ipolipemizzante);
+    terapiaDomiciliare = latestVisita.terapia_domiciliare || '';
+    valutazioneOdierna = latestVisita.valutazione_odierna || '';
+    esamiEmatici = createEmptyEsamiEmatici();
+    valutazioneRischioCV = parseValutazioneRischioCV(latestVisita.valutazione_rischio_cv, esamiEmatici);
+    if (RISK_CV_DEBUG) {
+      console.info('[RISK-CV][PAGE] applyLatestVisitaData', {
+        visitaId: latestVisita.id,
+        rawValutazioneRischio: latestVisita.valutazione_rischio_cv,
+        parsedValutazioneRischio: valutazioneRischioCV,
+        parsedEsami: {
+          ldl_diretto: esamiEmatici.ldl_diretto,
+          ldl_calcolato: esamiEmatici.ldl_calcolato
+        }
+      });
+    }
+    ecocardiografia = parseEcocardiografia(latestVisita.ecocardiografia);
+    fhAssessment = parseFHAssessment(latestVisita.fh_assessment);
+    firmeVisita = parseFirmeVisita(latestVisita.firme_visita);
+  }
+
+  async function prefillFromLatestVisita(paziente: Paziente): Promise<void> {
+    const requestKey = `${paziente.id}:${Date.now()}`;
+    latestVisitaPrefillRequestKey = requestKey;
+
+    resetVisitState(EXISTING_PATIENT_DEFAULT_VISIT_TYPE);
+
+    try {
+      const visite = await getVisiteByPaziente(paziente.id);
+      if (latestVisitaPrefillRequestKey !== requestKey || selectedPaziente?.id !== paziente.id) {
+        return;
+      }
+
+      const latestVisita = visite[0];
+      if (!latestVisita) {
+        return;
+      }
+
+      applyLatestVisitaData(latestVisita);
+
+      try {
+        const fattori = await getFattoriRischioCVByVisitaId(latestVisita.id);
+        if (latestVisitaPrefillRequestKey !== requestKey || selectedPaziente?.id !== paziente.id) {
+          return;
+        }
+
+        if (!fattori) {
+          fattoriRischio = createEmptyFattoriRischio();
+          return;
+        }
+
+        fattoriRischio = {
+          familiarita: fattori.familiarita,
+          familiarita_note: fattori.familiarita_note || '',
+          ipertensione: fattori.ipertensione,
+          diabete: fattori.diabete,
+          diabete_durata: fattori.diabete_durata || '',
+          diabete_tipo: fattori.diabete_tipo || '',
+          dislipidemia: fattori.dislipidemia,
+          obesita: fattori.obesita,
+          fumo: fattori.fumo || '',
+          fumo_ex_eta: fattori.fumo_ex_eta || ''
+        };
+      } catch (fattoriError) {
+        console.error('Errore precompilazione fattori rischio:', fattoriError);
+        if (latestVisitaPrefillRequestKey === requestKey && selectedPaziente?.id === paziente.id) {
+          fattoriRischio = createEmptyFattoriRischio();
+        }
+      }
+    } catch (prefillError) {
+      console.error('Errore precompilazione visita precedente:', prefillError);
+    }
   }
 
   async function loadPazienti() {
@@ -276,7 +470,11 @@
     const preselectedPaziente = pazienti.find((paziente) => paziente.id === preselectedPazienteId);
     if (preselectedPaziente) {
       selectPaziente(preselectedPaziente);
+      currentStep = 'compile_visit';
+      return;
     }
+
+    toastStore.show('info', 'Il paziente pre-selezionato non è stato trovato. Selezionalo manualmente.');
   }
 
   async function initializePage() {
@@ -285,7 +483,8 @@
   }
 
   async function loadPreviousEsamiEmatici(requestKey = previousEsamiLookupKey) {
-    if (!selectedPaziente || !formData.data_visita) {
+    const esamiReferenceDate = (esamiEmatici.data_ee || '').trim() || formData.data_visita;
+    if (!selectedPaziente || !esamiReferenceDate) {
       previousEsamiEmatici = {};
       return;
     }
@@ -293,7 +492,7 @@
     try {
       const nextValues = await getPreviousEsamiEmaticiByPaziente({
         pazienteId: selectedPaziente.id,
-        beforeDate: formData.data_visita
+        beforeDate: esamiReferenceDate
       });
 
       if (requestKey !== previousEsamiLookupKey) {
@@ -309,21 +508,55 @@
     }
   }
 
-  function selectPaziente(paziente: Paziente) {
+  function selectPaziente(paziente: Paziente, options: SelectPazienteOptions = {}) {
+    const prefillFromHistory = options.prefillFromHistory ?? true;
+
     selectedPaziente = paziente;
-    patientLookup = {
-      nome: paziente.nome,
-      cognome: paziente.cognome,
-      codice_fiscale: paziente.codice_fiscale
-    };
-    showPatientSuggestions = false;
-    searchTerm = '';
-    showPatientModal = false;
+
+    if (prefillFromHistory) {
+      void prefillFromLatestVisita(paziente);
+      return;
+    }
+
+    latestVisitaPrefillRequestKey = `${paziente.id}:skip:${Date.now()}`;
+    resetVisitState('');
   }
 
-  function openPatientModal() {
-    showPatientModal = true;
+  function handleSelectPazienteForVisit(paziente: Paziente): void {
+    selectPaziente(paziente);
+  }
+
+  function handleContinueToVisitForm(): void {
+    if (!selectedPaziente) {
+      toastStore.show('error', 'Seleziona un paziente per continuare');
+      return;
+    }
+
+    currentStep = 'compile_visit';
+  }
+
+  function handleChangePaziente(): void {
+    if (!selectedPaziente) {
+      currentStep = 'select_patient';
+      return;
+    }
+
+    const confirmed =
+      typeof window === 'undefined'
+        ? true
+        : window.confirm(
+            'Cambiare paziente? I dati inseriti nella visita corrente verranno azzerati.'
+          );
+
+    if (!confirmed) {
+      return;
+    }
+
+    latestVisitaPrefillRequestKey = '';
+    selectedPaziente = null;
     searchTerm = '';
+    resetVisitState('');
+    currentStep = 'select_patient';
   }
 
   function openNewPatientModal() {
@@ -335,59 +568,12 @@
     // Ricarica la lista dei pazienti
     await loadPazienti();
     // Seleziona automaticamente il nuovo paziente
-    selectPaziente(newPaziente);
+    selectPaziente(newPaziente, { prefillFromHistory: false });
+    currentStep = 'compile_visit';
     // Mostra un messaggio di successo
     toastStore.show('success', 'Paziente creato con successo!');
     // Chiudi il modal
     showNewPatientModal = false;
-  }
-
-  function getSelectedPatientFieldValue(field: PatientLookupField): string {
-    if (!selectedPaziente) {
-      return '';
-    }
-
-    if (field === 'nome') {
-      return selectedPaziente.nome;
-    }
-
-    if (field === 'cognome') {
-      return selectedPaziente.cognome;
-    }
-
-    return selectedPaziente.codice_fiscale;
-  }
-
-  function handlePatientLookupInput(field: PatientLookupField, event: Event) {
-    const target = event.currentTarget as HTMLInputElement;
-    const rawValue = target.value;
-    const value = field === 'codice_fiscale' ? rawValue.toUpperCase() : rawValue;
-    const isStartingNewSearch =
-      !!selectedPaziente && value !== getSelectedPatientFieldValue(field);
-
-    if (isStartingNewSearch) {
-      selectedPaziente = null;
-      patientLookup = createEmptyPatientLookup();
-    }
-
-    if (field === 'nome') {
-      patientLookup = {
-        ...patientLookup,
-        nome: value
-      };
-    } else if (field === 'cognome') {
-      patientLookup = {
-        ...patientLookup,
-        cognome: value
-      };
-    } else {
-      patientLookup = {
-        ...patientLookup,
-        codice_fiscale: value
-      };
-    }
-
-    showPatientSuggestions = true;
   }
 
   function calculateAge(dataNascita: string): number {
@@ -425,6 +611,24 @@
     return message.startsWith('Errore') ? message : `Errore referto: ${message}`;
   }
 
+  async function openReportInWord(reportPath: string): Promise<void> {
+    const { openPath } = await import('@tauri-apps/plugin-opener');
+
+    // Try explicit Word targets first, then fallback to the OS default app for DOCX.
+    const wordOpeners = ['winword', 'Microsoft Word', 'com.microsoft.Word', '/Applications/Microsoft Word.app'];
+
+    for (const opener of wordOpeners) {
+      try {
+        await openPath(reportPath, opener);
+        return;
+      } catch {
+        // Ignore and try next candidate.
+      }
+    }
+
+    await openPath(reportPath);
+  }
+
   async function submitVisit(generateReport = false) {
     if (!selectedPaziente) {
       toastStore.show('error', 'Seleziona un paziente');
@@ -458,6 +662,34 @@
       return;
     }
 
+    const followUpDateTime = (pianificazioneFollowUp.dataOraProssimaVisita || '').trim();
+    if (followUpDateTime) {
+      try {
+        const followUpAvailability = await checkAppuntamentoSlotAvailability({
+          ambulatorioId,
+          dataOraInizio: followUpDateTime
+        });
+
+        if (!followUpAvailability.available) {
+          const suggestionsText =
+            followUpAvailability.suggestedTimes.length > 0
+              ? ` Slot disponibili: ${followUpAvailability.suggestedTimes.join(', ')}.`
+              : '';
+          toastStore.show(
+            'error',
+            `Lo slot scelto per la prossima visita non è disponibile.${suggestionsText}`
+          );
+          return;
+        }
+      } catch (slotError) {
+        toastStore.show(
+          'error',
+          `Impossibile validare lo slot della prossima visita: ${getErrorMessage(slotError)}`
+        );
+        return;
+      }
+    }
+
     if (!user) {
       toastStore.show('error', 'Utente non autenticato');
       return;
@@ -481,7 +713,7 @@
           ambulatorio_id: ambulatorioId,
           paziente_id: selectedPaziente.id,
           medico_id: user.id,
-          data_visita: formData.data_visita || new Date().toISOString(),
+          data_visita: formData.data_visita || getTodayVisitDate(),
           tipo_visita: formData.tipo_visita,
           motivo: formData.motivo,
           altezza: formData.altezza ? parseFloat(formData.altezza) : undefined,
@@ -544,6 +776,7 @@
               fumo: fattoriRischio.fumo,
               fumo_ex_eta: fattoriRischio.fumo_ex_eta
             },
+            fhAssessment,
             anamnesiPatologicaRemota: anamnesiCardiologica,
             terapiaIpolipemizzante,
             terapiaDomiciliare,
@@ -556,7 +789,17 @@
           });
 
           if (reportResult.saved) {
-            toastStore.show('success', 'Visita e referto DOCX salvati con successo!');
+            if (reportResult.path) {
+              try {
+                await openReportInWord(reportResult.path);
+                toastStore.show('success', 'Visita e referto DOCX salvati. Referto aperto in Word.');
+              } catch (openError) {
+                console.error('Errore apertura referto DOCX:', openError);
+                toastStore.show('warning', `Visita e referto DOCX salvati, ma non è stato possibile aprire Word. ${getReportErrorMessage(openError)}`);
+              }
+            } else {
+              toastStore.show('success', 'Visita e referto DOCX salvati con successo!');
+            }
           } else {
             toastStore.show('success', 'Visita creata. Salvataggio referto annullato.');
           }
@@ -598,31 +841,23 @@
 <div class="nuova-visita-page">
   <PageHeader
     title="Nuova Visita"
-    subtitle={selectedPaziente
+    subtitle={currentStep === 'compile_visit'
       ? 'Inserisci i dati della nuova visita medica'
       : 'Seleziona o crea un paziente per iniziare la visita'}
     showLogo={$sidebarCollapsedStore}
     onBack={handleBack}
   >
     <svelte:fragment slot="actions">
-      {#if selectedPaziente}
-        <button type="button" class="btn-icon-text" on:click={openNewPatientModal}>
+      <button type="button" class="btn-icon-text" on:click={openNewPatientModal}>
+        <span class="icon">
+          <Icon name="user-plus" size={24} />
+        </span>
+        <span class="text">Nuovo Paziente</span>
+      </button>
+      {#if currentStep === 'compile_visit'}
+        <button type="button" class="btn-icon-text" on:click={handleChangePaziente}>
           <span class="icon">
-            <svg class="icon-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <line x1="19" y1="8" x2="19" y2="14"/>
-              <line x1="22" y1="11" x2="16" y2="11"/>
-            </svg>
-          </span>
-          <span class="text">Nuovo Paziente</span>
-        </button>
-        <button type="button" class="btn-icon-text" on:click={openPatientModal}>
-          <span class="icon">
-            <svg class="icon-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-              <circle cx="12" cy="7" r="4"/>
-            </svg>
+            <Icon name="user" size={24} />
           </span>
           <span class="text">Cambia Paziente</span>
         </button>
@@ -630,161 +865,117 @@
     </svelte:fragment>
   </PageHeader>
 
-  {#if !selectedPaziente}
-    <section class="patient-start-screen">
-      <div class="patient-start-content">
-        <p class="patient-start-kicker">Prima di iniziare</p>
-        <h2 class="patient-start-title">Scegli il paziente della visita</h2>
-        <p class="patient-start-description">
-          Crea un nuovo paziente oppure selezionane uno gia presente in archivio.
+  {#if currentStep === 'select_patient'}
+    <section class="patient-selection-step">
+      <Card>
+        <h2 class="section-title">Scelta Paziente</h2>
+        <p class="patient-selection-description">
+          Seleziona un paziente esistente dalla lista oppure usa il pulsante in alto per crearne uno
+          nuovo.
         </p>
 
-        <div class="patient-start-actions">
-          <button type="button" class="patient-start-button" on:click={openNewPatientModal}>
-            <span class="icon">
-              <svg class="icon-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-                <circle cx="9" cy="7" r="4"/>
-                <line x1="19" y1="8" x2="19" y2="14"/>
-                <line x1="22" y1="11" x2="16" y2="11"/>
-              </svg>
-            </span>
-            <span class="patient-start-button-title">Nuovo Paziente</span>
-            <span class="patient-start-button-text">Apri subito la scheda anagrafica e aggiungilo.</span>
-          </button>
+        <div class="search-box patient-selection-search">
+          <input
+            type="text"
+            bind:value={searchTerm}
+            placeholder="Cerca per nome, cognome o codice fiscale..."
+          />
+        </div>
 
+        <div class="patient-table-container patient-selection-table">
+          {#if filteredPazienti.length === 0}
+            <div class="empty-state">Nessun paziente trovato</div>
+          {:else}
+            <table class="patient-table">
+              <thead>
+                <tr>
+                  <th>Cognome</th>
+                  <th>Nome</th>
+                  <th>Codice Fiscale</th>
+                  <th>Data Nascita</th>
+                  <th>Sesso</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each filteredPazienti as paziente}
+                  <tr
+                    class="patient-row"
+                    class:selected={selectedPaziente?.id === paziente.id}
+                    on:click={() => handleSelectPazienteForVisit(paziente)}
+                  >
+                    <td><strong>{paziente.cognome}</strong></td>
+                    <td>{paziente.nome}</td>
+                    <td class="text-muted">{paziente.codice_fiscale}</td>
+                    <td>{new Date(paziente.data_nascita).toLocaleDateString('it-IT')}</td>
+                    <td>{paziente.sesso}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        </div>
+
+        <div class="patient-selection-actions">
+          <button type="button" class="btn-secondary" on:click={handleBack}>
+            Annulla
+          </button>
           <button
             type="button"
-            class="patient-start-button patient-start-button-secondary"
-            on:click={openPatientModal}
+            class="btn-primary"
+            disabled={!selectedPaziente}
+            on:click={handleContinueToVisitForm}
           >
-            <span class="icon">
-              <svg class="icon-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                <circle cx="12" cy="7" r="4"/>
-              </svg>
-            </span>
-            <span class="patient-start-button-title">Seleziona Paziente</span>
-            <span class="patient-start-button-text">Cerca un paziente esistente e collega la visita.</span>
+            Continua
           </button>
         </div>
-      </div>
+      </Card>
     </section>
-  {:else}
+  {:else if selectedPaziente}
     <form on:submit|preventDefault={handleSubmit} class="page-content">
     <!-- Dati Anagrafici Paziente -->
     <Card>
       <h2 class="section-title">Dati Anagrafici</h2>
-
-      {#if !selectedPaziente}
-        <div class="patient-lookup-grid">
-          <div class="form-group patient-lookup-field">
-            <label for="paziente-cognome" class="field-label">Cognome</label>
-            <input
-              id="paziente-cognome"
-              type="text"
-              value={patientLookup.cognome}
-              placeholder="Digita almeno 2 caratteri"
-              autocomplete="off"
-              on:input={(event) => handlePatientLookupInput('cognome', event)}
-            />
-          </div>
-          <div class="form-group patient-lookup-field">
-            <label for="paziente-nome" class="field-label">Nome</label>
-            <input
-              id="paziente-nome"
-              type="text"
-              value={patientLookup.nome}
-              placeholder="Digita almeno 2 caratteri"
-              autocomplete="off"
-              on:input={(event) => handlePatientLookupInput('nome', event)}
-            />
-          </div>
-          <div class="form-group patient-lookup-field">
-            <label for="paziente-codice-fiscale" class="field-label">Codice Fiscale</label>
-            <input
-              id="paziente-codice-fiscale"
-              type="text"
-              value={patientLookup.codice_fiscale}
-              placeholder="Digita almeno 2 caratteri"
-              autocomplete="off"
-              on:input={(event) => handlePatientLookupInput('codice_fiscale', event)}
-            />
-          </div>
+      <div class="patient-info-grid">
+        <div class="info-item">
+          <span class="info-label">Nome Completo:</span>
+          <span class="info-value"
+            >{selectedPaziente.cognome} {selectedPaziente.nome}</span
+          >
         </div>
-
-        {#if showPatientSuggestions && hasActivePatientLookup}
-          <div class="patient-suggestions-panel">
-            {#if patientSuggestions.length === 0}
-              <div class="patient-lookup-hint">Nessun paziente trovato con questi criteri.</div>
+        <div class="info-item">
+          <span class="info-label">Codice Fiscale:</span>
+          <span class="info-value">{selectedPaziente.codice_fiscale}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Data di Nascita:</span>
+          <span class="info-value">
+            {new Date(selectedPaziente.data_nascita).toLocaleDateString('it-IT')}
+            ({calculateAge(selectedPaziente.data_nascita)} anni)
+          </span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Esenzione:</span>
+          <span class="info-value">
+            {#if selectedPaziente.esenzioni && selectedPaziente.esenzioni.trim() && selectedPaziente.esenzioni.toLowerCase() !== 'nessuno'}
+              {selectedPaziente.esenzioni}
             {:else}
-              <div class="patient-suggestions-list">
-                {#each patientSuggestions as paziente}
-                  <button
-                    type="button"
-                    class="patient-suggestion"
-                    on:click={() => selectPaziente(paziente)}
-                  >
-                    <span class="patient-suggestion-name">{paziente.cognome} {paziente.nome}</span>
-                    <span class="patient-suggestion-meta">
-                      {paziente.codice_fiscale} • {new Date(paziente.data_nascita).toLocaleDateString('it-IT')}
-                    </span>
-                  </button>
-                {/each}
-              </div>
+              Non esente
             {/if}
-          </div>
-        {:else}
-          <p class="patient-lookup-hint">
-            Digita almeno 2 caratteri in nome, cognome o codice fiscale per cercare un paziente
-            esistente.
-          </p>
-        {/if}
-      {/if}
-
-      {#if selectedPaziente}
-        <div class="patient-info-grid">
-          <div class="info-item">
-            <span class="info-label">Nome Completo:</span>
-            <span class="info-value"
-              >{selectedPaziente.cognome} {selectedPaziente.nome}</span
-            >
-          </div>
-          <div class="info-item">
-            <span class="info-label">Codice Fiscale:</span>
-            <span class="info-value">{selectedPaziente.codice_fiscale}</span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Data di Nascita:</span>
-            <span class="info-value">
-              {new Date(selectedPaziente.data_nascita).toLocaleDateString('it-IT')}
-              ({calculateAge(selectedPaziente.data_nascita)} anni)
-            </span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Esenzione:</span>
-            <span class="info-value">
-              {#if selectedPaziente.esenzioni && selectedPaziente.esenzioni.trim() && selectedPaziente.esenzioni.toLowerCase() !== 'nessuno'}
-                {selectedPaziente.esenzioni}
-              {:else}
-                Non esente
-              {/if}
-            </span>
-          </div>
-          {#if selectedPaziente.telefono}
-            <div class="info-item">
-              <span class="info-label">Telefono:</span>
-              <span class="info-value">{selectedPaziente.telefono}</span>
-            </div>
-          {/if}
-          {#if selectedPaziente.email}
-            <div class="info-item">
-              <span class="info-label">Email:</span>
-              <span class="info-value">{selectedPaziente.email}</span>
-            </div>
-          {/if}
+          </span>
         </div>
-      {/if}
+        {#if selectedPaziente.telefono}
+          <div class="info-item">
+            <span class="info-label">Telefono:</span>
+            <span class="info-value">{selectedPaziente.telefono}</span>
+          </div>
+        {/if}
+        {#if selectedPaziente.email}
+          <div class="info-item">
+            <span class="info-label">Email:</span>
+            <span class="info-value">{selectedPaziente.email}</span>
+          </div>
+        {/if}
+      </div>
     </Card>
 
     <!-- Dati Visita -->
@@ -953,7 +1144,12 @@
     {/if}
 
     {#if isBlockVisibleForAmbulatorio('valutazione-rischio-cv', ambulatorioId)}
-      <ValutazioneRischioCardiovascolare bind:valutazione={valutazioneRischioCV} esami={esamiEmatici} />
+      <ValutazioneRischioCardiovascolare
+        bind:valutazione={valutazioneRischioCV}
+        esami={esamiEmatici}
+        terapia={terapiaIpolipemizzante}
+        eta={etaPaziente}
+      />
     {/if}
 
     <!-- Ecocardiografia (solo per Ambulatorio Dislipidemie) -->
@@ -962,7 +1158,11 @@
     {/if}
 
     <!-- Conclusioni -->
-    <Conclusioni bind:conclusioni={conclusioni} bind:pianificazioneFollowUp={pianificazioneFollowUp} />
+    <Conclusioni
+      bind:conclusioni={conclusioni}
+      bind:pianificazioneFollowUp={pianificazioneFollowUp}
+      ambulatorioId={ambulatorioId}
+    />
 
     {#if isBlockVisibleForAmbulatorio('firme-visita', ambulatorioId)}
       <FirmeVisita bind:firme={firmeVisita} />
@@ -998,55 +1198,6 @@
   on:close={() => (showNewPatientModal = false)}
 />
 
-<!-- Modal Selezione Paziente -->
-{#if showPatientModal}
-  <div class="modal-overlay" on:click={() => (showPatientModal = false)}>
-    <div class="modal" on:click|stopPropagation>
-      <div class="modal-header">
-        <h2>Seleziona Paziente</h2>
-        <button class="close-btn" on:click={() => (showPatientModal = false)}>×</button>
-      </div>
-      <div class="modal-body">
-        <div class="search-box">
-          <input
-            type="text"
-            bind:value={searchTerm}
-            placeholder="Cerca per nome, cognome o codice fiscale..."
-          />
-        </div>
-        <div class="patient-table-container">
-          {#if filteredPazienti.length === 0}
-            <div class="empty-state">Nessun paziente trovato</div>
-          {:else}
-            <table class="patient-table">
-              <thead>
-                <tr>
-                  <th>Cognome</th>
-                  <th>Nome</th>
-                  <th>Codice Fiscale</th>
-                  <th>Data Nascita</th>
-                  <th>Sesso</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each filteredPazienti as paziente}
-                  <tr class="patient-row" on:click={() => selectPaziente(paziente)}>
-                    <td><strong>{paziente.cognome}</strong></td>
-                    <td>{paziente.nome}</td>
-                    <td class="text-muted">{paziente.codice_fiscale}</td>
-                    <td>{new Date(paziente.data_nascita).toLocaleDateString('it-IT')}</td>
-                    <td>{paziente.sesso}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          {/if}
-        </div>
-      </div>
-    </div>
-  </div>
-{/if}
-
 <style>
   .nuova-visita-page {
     padding: var(--space-6);
@@ -1060,109 +1211,31 @@
     gap: var(--space-6);
   }
 
-  .patient-start-screen {
-    min-height: 62vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-8) 0;
+  .patient-selection-step {
+    padding-top: var(--space-2);
   }
 
-  .patient-start-content {
-    width: min(100%, 860px);
-    padding: clamp(2rem, 5vw, 4rem);
-    border: 1px solid rgba(30, 58, 138, 0.12);
-    border-radius: 28px;
-    background:
-      radial-gradient(circle at top right, rgba(30, 58, 138, 0.08), transparent 32%),
-      linear-gradient(135deg, #ffffff 0%, rgba(241, 245, 249, 0.9) 100%);
-    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
-    text-align: center;
-  }
-
-  .patient-start-kicker {
-    margin: 0 0 var(--space-3);
-    font-size: var(--text-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--color-primary);
-  }
-
-  .patient-start-title {
-    margin: 0;
-    font-size: clamp(2rem, 4vw, 3rem);
-    line-height: 1.1;
-    color: var(--color-text-primary);
-  }
-
-  .patient-start-description {
-    max-width: 620px;
-    margin: var(--space-4) auto 0;
-    font-size: var(--text-lg);
-    line-height: 1.6;
-    color: var(--color-text-secondary);
-  }
-
-  .patient-start-actions {
-    margin-top: clamp(1.75rem, 4vw, 3rem);
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: clamp(1rem, 3vw, 1.5rem);
-  }
-
-  .patient-start-button {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-4);
-    min-height: 250px;
-    padding: clamp(1.5rem, 3vw, 2.25rem);
-    border: 1px solid rgba(30, 58, 138, 0.12);
-    border-radius: 24px;
-    background: #ffffff;
-    color: var(--color-text-primary);
-    cursor: pointer;
-    transition:
-      transform 0.2s ease,
-      box-shadow 0.2s ease,
-      border-color 0.2s ease;
-  }
-
-  .patient-start-button:hover {
-    transform: translateY(-4px);
-    border-color: rgba(30, 58, 138, 0.28);
-    box-shadow: 0 20px 32px rgba(15, 23, 42, 0.08);
-  }
-
-  .patient-start-button .icon {
-    width: 96px;
-    height: 96px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    background: rgba(30, 58, 138, 0.08);
-    color: var(--color-primary);
-  }
-
-  .patient-start-button-secondary .icon {
-    background: rgba(16, 185, 129, 0.1);
-    color: var(--color-success);
-  }
-
-  .patient-start-button-title {
-    font-size: clamp(1.35rem, 2vw, 1.75rem);
-    font-weight: 700;
-    line-height: 1.2;
-  }
-
-  .patient-start-button-text {
-    max-width: 280px;
+  .patient-selection-description {
+    margin: 0 0 var(--space-4);
     font-size: var(--text-base);
-    line-height: 1.6;
     color: var(--color-text-secondary);
+  }
+
+  .patient-selection-search {
+    margin-bottom: var(--space-4);
+  }
+
+  .patient-selection-table {
+    max-height: 440px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+  }
+
+  .patient-selection-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    margin-top: var(--space-5);
   }
 
   .section-title {
@@ -1228,155 +1301,6 @@
     cursor: pointer;
   }
 
-  .patient-lookup-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: var(--space-4);
-  }
-
-  .patient-lookup-field {
-    margin-bottom: 0;
-  }
-
-  .patient-lookup-field input {
-    width: 100%;
-    height: 34px;
-    padding: var(--space-1) var(--space-4);
-    font-size: var(--text-base);
-    font-family: var(--font-sans);
-    color: var(--color-text);
-    background-color: var(--color-bg);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    transition: all var(--transition-fast);
-    box-sizing: border-box;
-  }
-
-  .patient-lookup-field input:focus {
-    outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.1);
-  }
-
-  .patient-suggestions-panel {
-    margin-top: var(--space-4);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    background: var(--color-bg-secondary);
-    overflow: hidden;
-  }
-
-  .patient-suggestions-list {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .patient-suggestion {
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: var(--space-3) var(--space-4);
-    border: none;
-    border-bottom: 1px solid var(--color-border);
-    background: transparent;
-    text-align: left;
-    cursor: pointer;
-    transition: background 0.2s;
-  }
-
-  .patient-suggestion:last-child {
-    border-bottom: none;
-  }
-
-  .patient-suggestion:hover {
-    background: rgba(30, 58, 138, 0.06);
-  }
-
-  .patient-suggestion-name {
-    font-size: var(--text-base);
-    font-weight: 600;
-    color: var(--color-text-primary);
-  }
-
-  .patient-suggestion-meta {
-    font-size: var(--text-sm);
-    color: var(--color-text-secondary);
-  }
-
-  .patient-lookup-hint {
-    margin: var(--space-4) 0 0;
-    font-size: var(--text-sm);
-    color: var(--color-text-secondary);
-  }
-
-  /* Modal Styles */
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-  }
-
-  .modal {
-    background: #ffffff !important;
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-xl);
-    width: 90%;
-    max-width: 900px;
-    max-height: 80vh;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-6);
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .modal-header h2 {
-    margin: 0;
-    font-size: var(--text-xl);
-    font-weight: 600;
-    color: var(--color-text-primary);
-  }
-
-  .close-btn {
-    background: none !important;
-    border: none !important;
-    font-size: var(--text-3xl);
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    padding: 0 !important;
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-md);
-    transition: all 0.2s;
-  }
-
-  .close-btn:hover {
-    background: var(--color-bg-secondary) !important;
-    color: var(--color-text-primary);
-    border: none !important;
-  }
-
-  .modal-body {
-    padding: var(--space-6);
-    overflow-y: auto;
-  }
-
   .search-box {
     margin-bottom: var(--space-4);
   }
@@ -1440,6 +1364,10 @@
 
   .patient-row:hover {
     background: var(--color-bg-secondary);
+  }
+
+  .patient-row.selected {
+    background: rgba(30, 58, 138, 0.1);
   }
 
   .patient-row:active {
@@ -1571,26 +1499,11 @@
       grid-template-columns: 1fr;
     }
 
-    .patient-start-screen {
-      min-height: auto;
-      padding: var(--space-4) 0 var(--space-6);
-    }
-
-    .patient-start-content {
-      padding: var(--space-6);
-      border-radius: 22px;
-    }
-
-    .patient-start-actions {
-      grid-template-columns: 1fr;
-    }
-
-    .patient-start-button {
-      min-height: 200px;
+    .patient-selection-actions {
+      flex-direction: column;
     }
 
     .form-row,
-    .patient-lookup-grid,
     .patient-info-grid {
       grid-template-columns: 1fr;
     }

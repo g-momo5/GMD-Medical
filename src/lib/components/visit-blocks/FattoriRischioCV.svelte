@@ -2,6 +2,7 @@
   import { diabeteTipoOptions } from '$lib/configs/clinical-options';
   import type { DiabeteTipo } from '$lib/db/types';
   import Card from '../Card.svelte';
+  import Icon from '../Icon.svelte';
 
   export let bmi: number | null = null;
 
@@ -144,10 +145,7 @@
           {bmiLabel}{bmi !== null ? ` (BMI ${bmi.toFixed(1)})` : ''}
           {#if showObesitaNote}
             <span class="info-tooltip-wrapper">
-              <svg class="info-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                <circle cx="12" cy="12" r="10" fill="var(--color-primary)"/>
-                <text x="12" y="17" text-anchor="middle" fill="white" font-size="14" font-weight="bold" font-family="sans-serif">i</text>
-              </svg>
+              <Icon name="info" size={14} className="info-icon" />
               <span class="tooltip-text">Questo campo è stato automaticamente selezionato perché il BMI del paziente è ≥25. Puoi deselezionarlo manualmente se necessario.</span>
             </span>
           {/if}

@@ -16,32 +16,10 @@
     };
   }
 
-  function updateCardiologoNome(event: Event) {
-    const target = event.currentTarget as HTMLInputElement;
-    firme = {
-      ...firme,
-      cardiologoNome: target.value
-    };
-  }
-
   function updateCardiologoTitolo(titolo: 'dott' | 'dott.ssa') {
     firme = {
       ...firme,
       cardiologoTitolo: titolo
-    };
-  }
-
-  function updateMedicoInFormazioneNome(index: number, event: Event) {
-    const target = event.currentTarget as HTMLInputElement;
-    const next = [...firme.mediciInFormazione];
-    next[index] = {
-      ...next[index],
-      nome: target.value
-    };
-
-    firme = {
-      ...firme,
-      mediciInFormazione: next
     };
   }
 
@@ -105,9 +83,8 @@
         <Input
           id="firma-cardiologo"
           type="text"
-          value={firme.cardiologoNome}
+          bind:value={firme.cardiologoNome}
           placeholder="Nome del cardiologo"
-          on:input={updateCardiologoNome}
         />
       </div>
     </div>
@@ -155,9 +132,8 @@
               <Input
                 id={`firma-specializzando-${index}`}
                 type="text"
-                value={medico.nome}
+                bind:value={firme.mediciInFormazione[index].nome}
                 placeholder="Nome dello specializzando"
-                on:input={(event) => updateMedicoInFormazioneNome(index, event)}
               />
             </div>
           </div>

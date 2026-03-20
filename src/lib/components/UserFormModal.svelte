@@ -75,11 +75,31 @@
   function handleClose() {
     dispatch('close');
   }
+
+  function handleOverlayClick(event: MouseEvent): void {
+    if (event.target === event.currentTarget) {
+      handleClose();
+    }
+  }
+
+  function handleOverlayKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      handleClose();
+    }
+  }
 </script>
 
 {#if isOpen}
-  <div class="modal-overlay" on:click={handleClose}>
-    <div class="modal" on:click|stopPropagation>
+  <div
+    class="modal-overlay"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    on:click={handleOverlayClick}
+    on:keydown={handleOverlayKeydown}
+  >
+    <div class="modal">
       <div class="modal-header">
         <h2>{user ? 'Modifica Utente' : 'Nuovo Utente'}</h2>
         <button class="close-btn" on:click={handleClose}>×</button>

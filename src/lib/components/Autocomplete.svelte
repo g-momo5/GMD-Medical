@@ -1,24 +1,30 @@
-<script>
-  export let id;
-  export let label;
+<script lang="ts">
+  import type { AutocompleteItem } from '$lib/types/autocomplete';
+
+  export let id = '';
+  export let label = '';
   export let value = '';
   export let placeholder = '';
   export let required = false;
   export let error = '';
-  export let items = []; // Array di oggetti { nome, codiceCatastale }
+  export let items: AutocompleteItem[] = [];
   export let minChars = 3;
-  export let onSelect = null; // Callback quando viene selezionato un item
+  export let onSelect: ((item: AutocompleteItem) => void) | null = null;
 
   let searchTerm = value;
-  let filteredItems = [];
+  let filteredItems: AutocompleteItem[] = [];
   let showDropdown = false;
   let selectedIndex = -1;
 
+  $: if (value !== searchTerm) {
+    searchTerm = value;
+  }
+
   $: {
     if (searchTerm.length >= minChars) {
-      filteredItems = items.filter(item =>
-        item.nome.toLowerCase().includes(searchTerm.toLowerCase())
-      ).slice(0, 10); // Massimo 10 risultati
+      filteredItems = items
+        .filter((item) => item.nome.toLowerCase().includes(searchTerm.toLowerCase()))
+        .slice(0, 10);
       showDropdown = filteredItems.length > 0;
     } else {
       filteredItems = [];
@@ -26,7 +32,7 @@
     }
   }
 
-  function selectItem(item) {
+  function selectItem(item: AutocompleteItem): void {
     searchTerm = item.nome;
     value = item.nome;
     showDropdown = false;
@@ -36,20 +42,20 @@
     }
   }
 
-  function handleKeydown(e) {
+  function handleKeydown(event: KeyboardEvent): void {
     if (!showDropdown) return;
 
-    switch(e.key) {
+    switch (event.key) {
       case 'ArrowDown':
-        e.preventDefault();
+        event.preventDefault();
         selectedIndex = Math.min(selectedIndex + 1, filteredItems.length - 1);
         break;
       case 'ArrowUp':
-        e.preventDefault();
+        event.preventDefault();
         selectedIndex = Math.max(selectedIndex - 1, -1);
         break;
       case 'Enter':
-        e.preventDefault();
+        event.preventDefault();
         if (selectedIndex >= 0 && filteredItems[selectedIndex]) {
           selectItem(filteredItems[selectedIndex]);
         }
@@ -58,10 +64,12 @@
         showDropdown = false;
         selectedIndex = -1;
         break;
+      default:
+        break;
     }
   }
 
-  function handleBlur() {
+  function handleBlur(): void {
     // Ritardo per permettere il click su un item
     setTimeout(() => {
       showDropdown = false;
@@ -69,9 +77,21 @@
     }, 200);
   }
 
-  function handleInput(e) {
-    searchTerm = e.target.value;
-    value = e.target.value;
+  function handleInput(event: Event): void {
+    const target = event.currentTarget as HTMLInputElement;
+    searchTerm = target.value;
+    value = target.value;
+  }
+
+  function handleFocus(): void {
+    if (searchTerm.length < minChars) {
+      return;
+    }
+
+    filteredItems = items
+      .filter((item) => item.nome.toLowerCase().includes(searchTerm.toLowerCase()))
+      .slice(0, 10);
+    showDropdown = filteredItems.length > 0;
   }
 </script>
 
@@ -95,17 +115,7 @@
       on:input={handleInput}
       on:keydown={handleKeydown}
       on:blur={handleBlur}
-      on:focus={() => {
-        // Mostra dropdown solo se ci sono già abbastanza caratteri
-        if (searchTerm.length >= minChars) {
-          filteredItems = items.filter(item =>
-            item.nome.toLowerCase().includes(searchTerm.toLowerCase())
-          ).slice(0, 10);
-          if (filteredItems.length > 0) {
-            showDropdown = true;
-          }
-        }
-      }}
+      on:focus={handleFocus}
       autocomplete="off"
     />
 

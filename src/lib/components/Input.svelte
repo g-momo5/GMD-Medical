@@ -1,5 +1,7 @@
 <script lang="ts">
   import { capitalizeWords, uppercaseText } from '$lib/utils/formatters';
+  import type { HTMLInputAttributes } from 'svelte/elements';
+  import SegmentedDateField from './SegmentedDateField.svelte';
 
   export let type: 'text' | 'email' | 'password' | 'number' | 'date' | 'datetime-local' | 'tel' = 'text';
   export let value = '';
@@ -11,7 +13,7 @@
   export let id = '';
   export let format: 'capitalize' | 'uppercase' | 'none' = 'none';
   export let step: string | number | undefined = undefined;
-  export let inputmode: string | undefined = undefined;
+  export let inputmode: HTMLInputAttributes['inputmode'] = undefined;
   export let pattern: string | undefined = undefined;
 
   function handleInput(event: Event) {
@@ -40,18 +42,13 @@
     </label>
   {/if}
   {#if type === 'date' || type === 'datetime-local'}
-    <input
+    <SegmentedDateField
       {id}
-      {type}
-      {placeholder}
+      bind:value
+      withTime={type === 'datetime-local'}
       {disabled}
       {required}
-      {step}
-      {inputmode}
-      {pattern}
-      value={value}
-      class:error={!!error}
-      on:input={(e) => value = e.currentTarget.value}
+      hasError={!!error}
       on:blur
       on:focus
     />
@@ -109,35 +106,6 @@
     box-sizing: border-box;
     -webkit-box-sizing: border-box;
     -moz-box-sizing: border-box;
-  }
-
-  /* Stili specifici per i segmenti del date/datetime picker di WebKit */
-  input::-webkit-datetime-edit-fields-wrapper {
-    padding: 0;
-  }
-
-  input::-webkit-datetime-edit-text {
-    padding: 0 2px;
-    color: var(--color-text);
-  }
-
-  input::-webkit-datetime-edit-day-field,
-  input::-webkit-datetime-edit-month-field,
-  input::-webkit-datetime-edit-year-field,
-  input::-webkit-datetime-edit-hour-field,
-  input::-webkit-datetime-edit-minute-field {
-    padding: 2px;
-    color: var(--color-text);
-  }
-
-  input::-webkit-datetime-edit-day-field:focus,
-  input::-webkit-datetime-edit-month-field:focus,
-  input::-webkit-datetime-edit-year-field:focus,
-  input::-webkit-datetime-edit-hour-field:focus,
-  input::-webkit-datetime-edit-minute-field:focus {
-    background-color: var(--color-primary);
-    color: white;
-    outline: none;
   }
 
   input:focus {

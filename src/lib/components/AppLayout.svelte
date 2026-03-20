@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Sidebar from './Sidebar.svelte';
+  import Icon from './Icon.svelte';
   import { ambulatorioStore } from '$lib/stores/ambulatorio';
   import { sidebarCollapsedStore } from '$lib/stores/sidebar';
 
@@ -30,13 +31,11 @@
   <Sidebar {ambulatorioId} collapsed={$sidebarCollapsedStore} />
 
   <button class="sidebar-toggle" on:click={toggleSidebar} title={$sidebarCollapsedStore ? 'Espandi sidebar' : 'Riduci sidebar'}>
-    <svg class="icon-svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      {#if $sidebarCollapsedStore}
-        <polyline points="9 18 15 12 9 6"/>
-      {:else}
-        <polyline points="15 18 9 12 15 6"/>
-      {/if}
-    </svg>
+    {#if $sidebarCollapsedStore}
+      <Icon name="chevron-right" size={20} />
+    {:else}
+      <Icon name="chevron-left" size={20} />
+    {/if}
   </button>
 
   <main class="main-content">

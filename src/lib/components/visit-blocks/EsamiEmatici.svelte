@@ -10,6 +10,7 @@
   type Sex = 'M' | 'F' | 'Altro';
 
   export let esami: EsamiEmaticiValues = {
+    data_ee: '',
     hb: '',
     plt: '',
     creatinina: '',
@@ -102,6 +103,10 @@
     }).format(parsed);
   }
 
+  function hasAnyCurrentValue(): boolean {
+    return analytes.some((analyte) => String(esami[analyte.key] ?? '').trim().length > 0);
+  }
+
   $: {
     const nextEgfr = computeEgfr();
     const nextLdl = computeLdl();
@@ -112,7 +117,18 @@
 </script>
 
 <Card>
-  <h2 class="section-title">Esami Ematici</h2>
+  <div class="section-head">
+    <div class="section-title-row">
+      <h2 class="section-title">Esami Ematici</h2>
+      <div class="esami-date-input">
+        <Input
+          id="esami_data_ee"
+          type="date"
+          bind:value={esami.data_ee}
+        />
+      </div>
+    </div>
+  </div>
 
   <div class="analiti-grid">
     {#each analytes as analyte}
@@ -128,9 +144,9 @@
           placeholder={analyte.computed ? 'Calcolato automaticamente' : 'Inserisci valore'}
         />
 
-        {#if previousValues[analyte.key]}
+        {#if previousValues[analyte.key] && hasAnyCurrentValue()}
           <div class="previous-value">
-            Ultimo: {previousValues[analyte.key]?.value} ({formatPreviousDate(previousValues[analyte.key]?.date || '')})
+            Ultimo valore: {previousValues[analyte.key]?.value} {analyte.unit} ({formatPreviousDate(previousValues[analyte.key]?.date || '')})
           </div>
         {/if}
       </div>
@@ -147,15 +163,43 @@
     font-size: var(--text-xl);
     font-weight: 600;
     color: var(--color-text);
-    margin: 0 0 var(--space-4) 0;
+    margin: 0;
+  }
+
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
     padding-bottom: var(--space-3);
     border-bottom: 2px solid var(--color-border);
+    margin-bottom: var(--space-4);
+  }
+
+  .section-title-row {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
   }
 
   .analiti-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
     gap: var(--space-4);
+  }
+
+  .esami-date-input {
+    width: 170px;
+    flex-shrink: 0;
+  }
+
+  .esami-date-input :global(.input-group) {
+    gap: 0;
+  }
+
+  @media (max-width: 640px) {
+    .section-title-row {
+      flex-wrap: wrap;
+    }
   }
 
   .analyte-field {

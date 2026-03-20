@@ -1,5 +1,6 @@
 <script lang="ts">
   import Card from '../Card.svelte';
+  import Icon from '../Icon.svelte';
   import RichTextarea from '../RichTextarea.svelte';
 
   export let anamnesi_internistica = '';
@@ -72,6 +73,7 @@
   function setCursorPosition(pos: number) {
     const selection = window.getSelection();
     if (!selection) return;
+    const activeSelection = selection;
 
     let charCount = 0;
     let foundPosition = false;
@@ -85,8 +87,8 @@
           const range = document.createRange();
           range.setStart(node, pos - charCount);
           range.collapse(true);
-          selection.removeAllRanges();
-          selection.addRange(range);
+          activeSelection.removeAllRanges();
+          activeSelection.addRange(range);
           foundPosition = true;
           return true;
         }
@@ -157,7 +159,7 @@
         // Se non c'è bullet, inserisci semplicemente 2 spazi
         anamnesi_internistica = textBeforeCursor + '  ' + textAfterCursor;
         setTimeout(() => {
-          textarea.selectionStart = textarea.selectionEnd = cursorPos + 2;
+          setCursorPosition(cursorPos + 2);
         }, 0);
       }
     } else if (event.key === 'Enter') {
@@ -359,43 +361,23 @@
   <div class="anamnesi-content">
     <div class="toolbar">
       <button type="button" class="toolbar-btn toolbar-btn-icon" class:active={isBoldActive} on:click={() => formatText('bold')} title="Grassetto (** **)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M4 2h5a3.5 3.5 0 0 1 2.5 6A3.5 3.5 0 0 1 9 14H4V2zm1.5 1.5v4h3.5a2 2 0 1 0 0-4h-3.5zm0 5.5v4H9a2 2 0 1 0 0-4H5.5z"/>
-        </svg>
+        <Icon name="bold" size={16} />
       </button>
       <button type="button" class="toolbar-btn toolbar-btn-icon" class:active={isItalicActive} on:click={() => formatText('italic')} title="Corsivo (* *)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M7.5 2h5v1.5h-1.8l-2.4 9h1.7V14h-5v-1.5h1.8l2.4-9H7.5V2z"/>
-        </svg>
+        <Icon name="italic" size={16} />
       </button>
       <button type="button" class="toolbar-btn toolbar-btn-icon" class:active={isUnderlineActive} on:click={() => formatText('underline')} title="Sottolineato (__ __)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M8 13c-2.5 0-4-1.5-4-4V2h1.5v7c0 1.7.8 2.5 2.5 2.5s2.5-.8 2.5-2.5V2H12v7c0 2.5-1.5 4-4 4zM3 14h10v1H3v-1z"/>
-        </svg>
+        <Icon name="underline" size={16} />
       </button>
 
       <div class="toolbar-divider"></div>
 
       <button type="button" class="toolbar-btn" on:click={addBulletPoint} title="Aggiungi punto elenco (-)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <rect x="2" y="3" width="2" height="2" rx="0.5"/>
-          <rect x="6" y="3" width="8" height="2" rx="0.5"/>
-          <rect x="2" y="7" width="2" height="2" rx="0.5"/>
-          <rect x="6" y="7" width="8" height="2" rx="0.5"/>
-          <rect x="2" y="11" width="2" height="2" rx="0.5"/>
-          <rect x="6" y="11" width="8" height="2" rx="0.5"/>
-        </svg>
+        <Icon name="list" size={16} />
         <span>Elenco (-)</span>
       </button>
       <button type="button" class="toolbar-btn" on:click={addCircleBullet} title="Aggiungi punto elenco (•)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <circle cx="3" cy="4" r="1.5"/>
-          <rect x="6" y="3" width="8" height="2" rx="0.5"/>
-          <circle cx="3" cy="8" r="1.5"/>
-          <rect x="6" y="7" width="8" height="2" rx="0.5"/>
-          <circle cx="3" cy="12" r="1.5"/>
-          <rect x="6" y="11" width="8" height="2" rx="0.5"/>
-        </svg>
+        <Icon name="list-ordered" size={16} />
         <span>Elenco (•)</span>
       </button>
 
@@ -473,10 +455,6 @@
   .toolbar-btn-icon {
     padding: var(--space-1);
     min-width: auto;
-  }
-
-  .toolbar-btn-icon span {
-    display: none;
   }
 
   .toolbar-divider {

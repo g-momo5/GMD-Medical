@@ -3,7 +3,7 @@
   import Input from '../Input.svelte';
   import Textarea from '../Textarea.svelte';
 
-  export type EcocardiografiaValues = {
+  type EcocardiografiaValues = {
     [key: string]: string;
     vs_dtd: string;
     vs_siv: string;
@@ -36,6 +36,18 @@
     vt_vmax: string;
     vci: string;
     referto: string;
+  };
+
+  type EcocardiografiaItem = {
+    key: keyof EcocardiografiaValues;
+    label: string;
+    unit: string;
+    computed?: boolean;
+  };
+
+  type EcocardiografiaSection = {
+    title: string;
+    items: EcocardiografiaItem[];
   };
 
   export let eco: EcocardiografiaValues = {
@@ -72,7 +84,7 @@
     referto: ''
   };
 
-  const sections = [
+  const sections: EcocardiografiaSection[] = [
     {
       title: 'Ventricolo sinistro',
       items: [
@@ -148,7 +160,13 @@
         { key: 'vci', label: 'VCI', unit: 'mm' }
       ]
     }
-  ] as const;
+  ];
+
+  function getItemLabel(item: EcocardiografiaItem): string {
+    return item.unit ? `${item.label} (${item.unit})` : item.label;
+  }
+
+  const decimalPattern = '^[0-9]*(?:[.,][0-9]{0,2})?$';
 
   function toNumber(value: string): number | null {
     if (value === null || value === undefined) return null;
@@ -192,10 +210,10 @@
               id={`eco_${item.key}`}
               type="text"
               inputmode="decimal"
-              pattern="^[0-9]*[.,]?[0-9]{0,2}$"
-              label={`${item.label}${item.unit ? ` (${item.unit})` : ''}`}
+              pattern={decimalPattern}
+              label={getItemLabel(item)}
               bind:value={eco[item.key]}
-              disabled={item.computed || false}
+              disabled={Boolean(item.computed)}
               placeholder={item.computed ? 'Calcolato automaticamente' : 'Inserisci valore'}
             />
           </div>

@@ -91,6 +91,13 @@ export interface CreatePazienteInput {
   email?: string;
 }
 
+export interface CreatePazienteRapidoInput {
+  ambulatorio_id: number;
+  nome: string;
+  cognome: string;
+  telefono: string;
+}
+
 export interface UpdatePazienteInput extends Partial<CreatePazienteInput> {
   id: number;
 }

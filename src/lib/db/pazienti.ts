@@ -1,7 +1,12 @@
 // GMD Medical Platform - Pazienti Database Operations
 import { insertReturningId } from './client';
 import { initDatabase } from './schema';
-import type { CreatePazienteInput, Paziente, UpdatePazienteInput } from './types';
+import type {
+  CreatePazienteInput,
+  CreatePazienteRapidoInput,
+  Paziente,
+  UpdatePazienteInput
+} from './types';
 
 function normalizeIntegerForWrite(value: number | string | null | undefined): number | null {
   if (value === null || value === undefined) {
@@ -87,6 +92,55 @@ export async function createPaziente(data: CreatePazienteInput): Promise<number>
       data.email || ''
     ]
   );
+}
+
+function sanitizeToken(value: string): string {
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 6);
+}
+
+function buildTemporaryCodiceFiscale(nome: string, cognome: string): string {
+  const timestampToken = Date.now().toString(36).toUpperCase().slice(-8);
+  const nameToken = sanitizeToken(nome).padEnd(3, 'X').slice(0, 3);
+  const surnameToken = sanitizeToken(cognome).padEnd(3, 'X').slice(0, 3);
+  return `TMP${surnameToken}${nameToken}${timestampToken}`;
+}
+
+export async function createPazienteRapido(data: CreatePazienteRapidoInput): Promise<number> {
+  const nome = data.nome.trim();
+  const cognome = data.cognome.trim();
+  const telefono = data.telefono.trim();
+
+  if (!nome) {
+    throw new Error('Il nome del paziente è obbligatorio');
+  }
+  if (!cognome) {
+    throw new Error('Il cognome del paziente è obbligatorio');
+  }
+  if (!telefono) {
+    throw new Error('Il numero di telefono del paziente è obbligatorio');
+  }
+
+  return createPaziente({
+    ambulatorio_id: data.ambulatorio_id,
+    nome,
+    cognome,
+    telefono,
+    // Campi tecnici richiesti dallo schema DB, inizializzati in modo neutro.
+    data_nascita: '1900-01-01',
+    luogo_nascita: 'Non specificato',
+    codice_fiscale: buildTemporaryCodiceFiscale(nome, cognome),
+    sesso: 'Altro',
+    esenzioni: '',
+    indirizzo: '',
+    citta: '',
+    cap: '',
+    provincia: '',
+    email: ''
+  });
 }
 
 export async function updatePaziente(data: UpdatePazienteInput): Promise<void> {

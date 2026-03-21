@@ -27,7 +27,7 @@
     updateAppuntamento
   } from '$lib/db/appuntamenti';
   import { getAmbulatorioOperatingSettingsById } from '$lib/db/ambulatori';
-  import { getAllPazienti } from '$lib/db/pazienti';
+  import { createPazienteRapido, getAllPazienti } from '$lib/db/pazienti';
   import type {
     AmbulatorioOperatingSettings,
     Appuntamento,
@@ -51,6 +51,14 @@
     motivo: string;
   };
 
+  type QuickPatientFormState = {
+    nome: string;
+    cognome: string;
+    telefono: string;
+  };
+
+  type PatientModalTab = 'search' | 'quick_create';
+
   const viewLabels: Record<CalendarView, string> = {
     dayGridMonth: 'Mese',
     timeGridDay: 'Giorno'
@@ -59,6 +67,8 @@
   const CALENDAR_VISIBLE_START_TIME = '08:00:00';
   const CALENDAR_VISIBLE_END_TIME = '20:00:00';
   const DEFAULT_APPOINTMENT_DURATION_MINUTES = 15;
+  const MIN_PATIENT_SEARCH_CHARS = 2;
+  const MAX_PATIENT_SUGGESTIONS = 10;
   const calendarPlugins = [dayGridPlugin, timeGridPlugin, interactionPlugin];
   const today = new Date();
 
@@ -68,6 +78,7 @@
   let calendarOptions: CalendarOptions;
   let loading = true;
   let loadingPatients = false;
+  let creatingQuickPatient = false;
   let savingAppointment = false;
   let deletingAppointment = false;
   let currentView: CalendarView = 'dayGridMonth';
@@ -88,6 +99,8 @@
   let calendarBusinessHours: CalendarOptions['businessHours'] = false;
   let loadedAmbulatorioId = 0;
   let showAppointmentModal = false;
+  let patientModalTab: PatientModalTab = 'search';
+  let patientSearchTerm = '';
   let editingAppointment: Appuntamento | null = null;
   let searchingFirstSlotMode: FirstSlotSearchMode | null = null;
   let nextUrgentSearchCursor: string | null = null;
@@ -99,6 +112,15 @@
     endTime: '08:15',
     motivo: ''
   };
+  let quickPatientForm: QuickPatientFormState = {
+    nome: '',
+    cognome: '',
+    telefono: ''
+  };
+  let quickPatientErrors: Partial<Record<keyof QuickPatientFormState, string>> = {};
+  let normalizedPatientSearchTerm = '';
+  let filteredPatientsForModal: Paziente[] = [];
+  let selectedAppointmentPatient: Paziente | null = null;
 
   $: ambulatorioPatients = patients
     .filter((patient) => patient.ambulatorio_id === ambulatorioId)
@@ -113,6 +135,25 @@
   $: isFollowUpAppointment = editingAppointment?.origine === 'followup_visita';
   $: modalTitle = isEditing ? 'Modifica Appuntamento' : 'Nuovo Appuntamento';
   $: currentDayCount = dailyCounts.get(jumpDate) ?? 0;
+  $: normalizedPatientSearchTerm = patientSearchTerm.trim().toLowerCase();
+  $: filteredPatientsForModal = ambulatorioPatients
+    .filter((patient) => {
+      if (normalizedPatientSearchTerm.length < MIN_PATIENT_SEARCH_CHARS) {
+        return false;
+      }
+
+      const nome = patient.nome.toLowerCase();
+      const cognome = patient.cognome.toLowerCase();
+      const fullName = `${cognome} ${nome}`;
+      return (
+        nome.includes(normalizedPatientSearchTerm) ||
+        cognome.includes(normalizedPatientSearchTerm) ||
+        fullName.includes(normalizedPatientSearchTerm)
+      );
+    })
+    .slice(0, MAX_PATIENT_SUGGESTIONS);
+  $: selectedAppointmentPatient =
+    ambulatorioPatients.find((patient) => patient.id === appointmentForm.pazienteId) ?? null;
   $: standardVisitDurationMinutes = Math.max(
     10,
     operatingSettings?.durataStandardVisitaMinuti ?? DEFAULT_APPOINTMENT_DURATION_MINUTES
@@ -131,6 +172,73 @@
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+  }
+
+  function resetQuickPatientForm(): void {
+    quickPatientForm = {
+      nome: '',
+      cognome: '',
+      telefono: ''
+    };
+  }
+
+  function resetQuickPatientErrors(): void {
+    quickPatientErrors = {};
+  }
+
+  function clearQuickPatientError(field: keyof QuickPatientFormState): void {
+    if (!quickPatientErrors[field]) {
+      return;
+    }
+
+    const nextErrors = { ...quickPatientErrors };
+    delete nextErrors[field];
+    quickPatientErrors = nextErrors;
+  }
+
+  function resetPatientModalState(): void {
+    patientModalTab = 'search';
+    patientSearchTerm = '';
+    resetQuickPatientForm();
+    resetQuickPatientErrors();
+  }
+
+  function switchPatientModalTab(nextTab: PatientModalTab): void {
+    patientModalTab = nextTab;
+    if (nextTab === 'search') {
+      resetQuickPatientErrors();
+      return;
+    }
+
+    patientSearchTerm = '';
+  }
+
+  function selectPatientForAppointment(patientId: number, patientLabel?: string): void {
+    appointmentForm = {
+      ...appointmentForm,
+      pazienteId: Number(patientId)
+    };
+
+    if (patientLabel) {
+      patientSearchTerm = patientLabel;
+    }
+  }
+
+  function validateQuickPatientForm(): boolean {
+    const nextErrors: Partial<Record<keyof QuickPatientFormState, string>> = {};
+
+    if (!quickPatientForm.nome.trim()) {
+      nextErrors.nome = 'Nome obbligatorio';
+    }
+    if (!quickPatientForm.cognome.trim()) {
+      nextErrors.cognome = 'Cognome obbligatorio';
+    }
+    if (!quickPatientForm.telefono.trim()) {
+      nextErrors.telefono = 'Telefono obbligatorio';
+    }
+
+    quickPatientErrors = nextErrors;
+    return Object.keys(nextErrors).length === 0;
   }
 
   function formatTimeOnly(date: Date): string {
@@ -784,6 +892,7 @@
       endTime: nextEndTime,
       motivo: ''
     };
+    resetPatientModalState();
     editingAppointment = null;
     showAppointmentModal = true;
   }
@@ -798,16 +907,56 @@
       endTime: normalizedEnd.slice(11, 16),
       motivo: appointment.motivo || ''
     };
+    resetPatientModalState();
     editingAppointment = appointment;
     showAppointmentModal = true;
   }
 
   function closeModal(): void {
     showAppointmentModal = false;
+    resetPatientModalState();
     editingAppointment = null;
     deletingAppointment = false;
     savingAppointment = false;
+    creatingQuickPatient = false;
     searchingFirstSlotMode = null;
+  }
+
+  async function createQuickPatientFromModal(): Promise<void> {
+    if (!ambulatorioId || creatingQuickPatient) {
+      return;
+    }
+
+    if (!validateQuickPatientForm()) {
+      return;
+    }
+
+    const nome = quickPatientForm.nome.trim();
+    const cognome = quickPatientForm.cognome.trim();
+    const telefono = quickPatientForm.telefono.trim();
+
+    creatingQuickPatient = true;
+
+    try {
+      const newPatientId = await createPazienteRapido({
+        ambulatorio_id: ambulatorioId,
+        nome,
+        cognome,
+        telefono
+      });
+
+      await loadPatients();
+      selectPatientForAppointment(newPatientId, `${cognome} ${nome}`);
+      patientModalTab = 'search';
+      resetQuickPatientForm();
+      resetQuickPatientErrors();
+      toastStore.show('success', `Paziente ${cognome} ${nome} creato e selezionato`);
+    } catch (error) {
+      console.error('Errore creazione paziente rapido:', error);
+      toastStore.show('error', `Errore creazione paziente: ${getErrorMessage(error)}`);
+    } finally {
+      creatingQuickPatient = false;
+    }
   }
 
   function handleDateClick(arg: any): void {
@@ -1207,62 +1356,64 @@
 
   <Card>
     <div class="calendar-toolbar">
-      <div class="toolbar-title-nav">
-        <button type="button" class="btn-nav-arrow" on:click={navigatePrev} aria-label="Periodo precedente">
-          <Icon name="chevron-left" size={18} />
-        </button>
-        <div class="toolbar-title">{calendarTitle || 'Calendario'}</div>
-        <button type="button" class="btn-secondary btn-today-inline" on:click={navigateToday}>Oggi</button>
-        <button type="button" class="btn-nav-arrow" on:click={navigateNext} aria-label="Periodo successivo">
-          <Icon name="chevron-right" size={18} />
-        </button>
+      <div class="calendar-toolbar-top">
+        <div class="toolbar-title-nav">
+          <button type="button" class="btn-nav-arrow" on:click={navigatePrev} aria-label="Periodo precedente">
+            <Icon name="chevron-left" size={18} />
+          </button>
+          <div class="toolbar-title">{calendarTitle || 'Calendario'}</div>
+          <button type="button" class="btn-secondary btn-today-inline" on:click={navigateToday}>Oggi</button>
+          <button type="button" class="btn-nav-arrow" on:click={navigateNext} aria-label="Periodo successivo">
+            <Icon name="chevron-right" size={18} />
+          </button>
+        </div>
+
+        <div class="toolbar-controls">
+          <div class="view-toggle" role="group" aria-label="Seleziona visualizzazione calendario">
+            <button
+              type="button"
+              class="toggle-btn"
+              class:active={currentView === 'dayGridMonth'}
+              on:click={() => changeView('dayGridMonth')}
+            >
+              Mese
+            </button>
+            <button
+              type="button"
+              class="toggle-btn"
+              class:active={currentView === 'timeGridDay'}
+              on:click={() => changeView('timeGridDay')}
+            >
+              Giorno
+            </button>
+          </div>
+
+          <div class="toolbar-jump">
+            <input type="date" bind:value={jumpDate} />
+            <button type="button" class="btn-secondary btn-jump" on:click={jumpToDate}>Vai</button>
+          </div>
+        </div>
       </div>
 
-      <div class="toolbar-controls">
-        <div class="toolbar-slot-actions">
-          <button
-            type="button"
-            class="btn-secondary"
-            on:click={() => handleFindFirstSlot('urgent', 'toolbar')}
-            disabled={Boolean(searchingFirstSlotMode) || !ambulatorioId}
-          >
-            {searchingFirstSlotMode === 'urgent' ? 'Ricerca urgente...' : 'Primo slot urgente'}
-          </button>
-          <button
-            type="button"
-            class="btn-secondary"
-            on:click={() => handleFindFirstSlot('quarter_hour', 'toolbar')}
-            disabled={Boolean(searchingFirstSlotMode) || !ambulatorioId}
-          >
-            {searchingFirstSlotMode === 'quarter_hour'
-              ? 'Ricerca disponibile...'
-              : 'Primo slot disponibile'}
-          </button>
-        </div>
-
-        <div class="view-toggle" role="group" aria-label="Seleziona visualizzazione calendario">
-          <button
-            type="button"
-            class="toggle-btn"
-            class:active={currentView === 'dayGridMonth'}
-            on:click={() => changeView('dayGridMonth')}
-          >
-            Mese
-          </button>
-          <button
-            type="button"
-            class="toggle-btn"
-            class:active={currentView === 'timeGridDay'}
-            on:click={() => changeView('timeGridDay')}
-          >
-            Giorno
-          </button>
-        </div>
-
-        <div class="toolbar-jump">
-          <input type="date" bind:value={jumpDate} />
-          <button type="button" class="btn-secondary" on:click={jumpToDate}>Vai</button>
-        </div>
+      <div class="toolbar-slot-actions">
+        <button
+          type="button"
+          class="btn-secondary slot-btn-urgent"
+          on:click={() => handleFindFirstSlot('urgent', 'toolbar')}
+          disabled={Boolean(searchingFirstSlotMode) || !ambulatorioId}
+        >
+          {searchingFirstSlotMode === 'urgent' ? 'Ricerca urgente...' : 'Primo slot urgente'}
+        </button>
+        <button
+          type="button"
+          class="btn-secondary slot-btn-available"
+          on:click={() => handleFindFirstSlot('quarter_hour', 'toolbar')}
+          disabled={Boolean(searchingFirstSlotMode) || !ambulatorioId}
+        >
+          {searchingFirstSlotMode === 'quarter_hour'
+            ? 'Ricerca disponibile...'
+            : 'Primo slot disponibile'}
+        </button>
       </div>
     </div>
 
@@ -1289,6 +1440,155 @@
 
 <Modal bind:open={showAppointmentModal} title={modalTitle} size="md" closeOnBackdropClick={false}>
   <div class="modal-form">
+    <div class="form-group">
+      {#if !isFollowUpAppointment}
+        <div class="patient-section-header">
+          <div class="patient-picker-tabs" role="tablist" aria-label="Seleziona modalità paziente">
+            <button
+              type="button"
+              role="tab"
+              class="patient-picker-tab"
+              class:active={patientModalTab === 'search'}
+              aria-selected={patientModalTab === 'search'}
+              on:click={() => switchPatientModalTab('search')}
+              disabled={creatingQuickPatient || savingAppointment || deletingAppointment}
+            >
+              Cerca paziente
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class="patient-picker-tab"
+              class:active={patientModalTab === 'quick_create'}
+              aria-selected={patientModalTab === 'quick_create'}
+              on:click={() => switchPatientModalTab('quick_create')}
+              disabled={creatingQuickPatient || savingAppointment || deletingAppointment}
+            >
+              Nuovo paziente
+            </button>
+          </div>
+        </div>
+      {/if}
+
+      {#if isFollowUpAppointment}
+        <div class="patient-readonly-card">
+          {#if selectedAppointmentPatient}
+            <strong>{selectedAppointmentPatient.cognome} {selectedAppointmentPatient.nome}</strong>
+            <span>Data di nascita: {formatBirthDateLabel(selectedAppointmentPatient.data_nascita) || '-'}</span>
+          {:else}
+            <span>Paziente associato alla visita origine</span>
+          {/if}
+        </div>
+        <small class="help-text">
+          Appuntamento da follow-up: il paziente della visita origine non è modificabile.
+        </small>
+      {:else}
+        {#if patientModalTab === 'search'}
+          <div class="patient-search-panel">
+            <div class="patient-search-autocomplete">
+              <div class="form-group">
+                <label for="appointment_patient_search">Cerca paziente</label>
+                <input
+                  id="appointment_patient_search"
+                  type="text"
+                  bind:value={patientSearchTerm}
+                  placeholder="Cerca per cognome o nome..."
+                  disabled={loadingPatients || creatingQuickPatient}
+                />
+              </div>
+
+              {#if normalizedPatientSearchTerm.length >= MIN_PATIENT_SEARCH_CHARS}
+                {#if loadingPatients}
+                  <div class="patient-search-empty patient-search-overlay">Caricamento pazienti...</div>
+                {:else if filteredPatientsForModal.length === 0}
+                  <div class="patient-search-empty patient-search-overlay">Nessun paziente trovato</div>
+                {:else}
+                  <div class="patient-search-list patient-search-overlay" role="listbox" aria-label="Risultati ricerca pazienti">
+                    {#each filteredPatientsForModal as patient}
+                      <button
+                        type="button"
+                        class="patient-search-item"
+                        class:selected={appointmentForm.pazienteId === patient.id}
+                        on:click={() => selectPatientForAppointment(patient.id, `${patient.cognome} ${patient.nome}`)}
+                      >
+                        <span class="patient-search-name">
+                          {patient.cognome} {patient.nome} ({formatBirthDateLabel(patient.data_nascita) || '-'})
+                        </span>
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              {/if}
+            </div>
+
+            {#if selectedAppointmentPatient}
+              <div class="selected-patient-summary">
+                Selezionato:
+                <strong>{selectedAppointmentPatient.cognome} {selectedAppointmentPatient.nome}</strong>
+                <span>({formatBirthDateLabel(selectedAppointmentPatient.data_nascita) || '-'})</span>
+              </div>
+            {/if}
+          </div>
+        {:else}
+          <div class="quick-patient-panel">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="quick_patient_nome">Nome *</label>
+                <input
+                  id="quick_patient_nome"
+                  type="text"
+                  bind:value={quickPatientForm.nome}
+                  disabled={creatingQuickPatient}
+                  on:input={() => clearQuickPatientError('nome')}
+                />
+                {#if quickPatientErrors.nome}
+                  <small class="field-error">{quickPatientErrors.nome}</small>
+                {/if}
+              </div>
+              <div class="form-group">
+                <label for="quick_patient_cognome">Cognome *</label>
+                <input
+                  id="quick_patient_cognome"
+                  type="text"
+                  bind:value={quickPatientForm.cognome}
+                  disabled={creatingQuickPatient}
+                  on:input={() => clearQuickPatientError('cognome')}
+                />
+                {#if quickPatientErrors.cognome}
+                  <small class="field-error">{quickPatientErrors.cognome}</small>
+                {/if}
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="quick_patient_telefono">Telefono *</label>
+              <input
+                id="quick_patient_telefono"
+                type="tel"
+                bind:value={quickPatientForm.telefono}
+                disabled={creatingQuickPatient}
+                on:input={() => clearQuickPatientError('telefono')}
+              />
+              {#if quickPatientErrors.telefono}
+                <small class="field-error">{quickPatientErrors.telefono}</small>
+              {/if}
+            </div>
+
+            <div class="quick-patient-actions">
+              <button
+                type="button"
+                class="btn-primary"
+                on:click={createQuickPatientFromModal}
+                disabled={creatingQuickPatient || savingAppointment || deletingAppointment}
+              >
+                {creatingQuickPatient ? 'Creazione paziente...' : 'Crea paziente e seleziona'}
+              </button>
+            </div>
+          </div>
+        {/if}
+      {/if}
+    </div>
+
     <div class="slot-search-actions">
       <button
         type="button"
@@ -1324,25 +1624,6 @@
       >
         Disponibile successivo
       </button>
-    </div>
-
-    <div class="form-group">
-      <label for="appointment_patient">Paziente *</label>
-      <select
-        id="appointment_patient"
-        bind:value={appointmentForm.pazienteId}
-        disabled={loadingPatients || isFollowUpAppointment}
-      >
-        <option value={0}>Seleziona paziente</option>
-        {#each ambulatorioPatients as patient}
-          <option value={patient.id}>{patient.cognome} {patient.nome}</option>
-        {/each}
-      </select>
-      {#if isFollowUpAppointment}
-        <small class="help-text">
-          Appuntamento da follow-up: il paziente della visita origine non è modificabile.
-        </small>
-      {/if}
     </div>
 
     <div class="form-row">
@@ -1580,11 +1861,18 @@
 
   .calendar-toolbar {
     display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+  }
+
+  .calendar-toolbar-top {
+    width: 100%;
+    display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
     gap: var(--space-3);
-    margin-bottom: var(--space-4);
   }
 
   .toolbar-title-nav,
@@ -1602,7 +1890,13 @@
     justify-content: flex-end;
   }
 
+  .toolbar-title-nav {
+    flex-wrap: wrap;
+  }
+
   .toolbar-slot-actions {
+    width: 100%;
+    justify-content: flex-start;
     flex-wrap: wrap;
   }
 
@@ -1701,6 +1995,32 @@
     background-color: var(--color-bg-secondary);
     cursor: not-allowed;
     opacity: 0.6;
+  }
+
+  .btn-jump {
+    height: 34px;
+  }
+
+  .slot-btn-urgent {
+    background: color-mix(in srgb, var(--color-error) 12%, var(--color-bg-primary));
+    color: color-mix(in srgb, var(--color-error) 86%, var(--color-text));
+    border-color: color-mix(in srgb, var(--color-error) 36%, transparent);
+  }
+
+  .slot-btn-urgent:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-error) 20%, var(--color-bg-primary));
+    border-color: color-mix(in srgb, var(--color-error) 48%, transparent);
+  }
+
+  .slot-btn-available {
+    background: color-mix(in srgb, var(--color-success) 14%, var(--color-bg-primary));
+    color: color-mix(in srgb, var(--color-success) 88%, var(--color-text));
+    border-color: color-mix(in srgb, var(--color-success) 36%, transparent);
+  }
+
+  .slot-btn-available:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-success) 22%, var(--color-bg-primary));
+    border-color: color-mix(in srgb, var(--color-success) 48%, transparent);
   }
 
   .btn-primary,
@@ -1827,8 +2147,7 @@
     color: var(--color-text);
   }
 
-  .form-group input,
-  .form-group select {
+  .form-group input {
     width: 100%;
     height: 34px;
     padding: var(--space-1) var(--space-4);
@@ -1842,20 +2161,13 @@
     box-sizing: border-box;
   }
 
-  .form-group select {
-    cursor: pointer;
-    appearance: none;
-  }
-
-  .form-group input:focus,
-  .form-group select:focus {
+  .form-group input:focus {
     outline: none;
     border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.1);
   }
 
-  .form-group input:disabled,
-  .form-group select:disabled {
+  .form-group input:disabled {
     background-color: var(--color-bg-secondary);
     cursor: not-allowed;
     opacity: 0.6;
@@ -1863,6 +2175,184 @@
 
   .help-text {
     color: var(--color-text-secondary);
+    font-size: var(--text-xs);
+  }
+
+  .patient-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .patient-picker-tabs {
+    display: inline-flex;
+    align-items: stretch;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    background: var(--color-bg-primary);
+  }
+
+  .patient-picker-tab {
+    border: 0;
+    border-right: 1px solid var(--color-border);
+    border-radius: 0;
+    padding: 8px 12px;
+    background: transparent;
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    white-space: nowrap;
+  }
+
+  .patient-picker-tab:last-child {
+    border-right: 0;
+  }
+
+  .patient-picker-tab:hover:not(:disabled):not(.active) {
+    background: var(--color-bg-secondary);
+  }
+
+  .patient-picker-tab.active {
+    background: var(--color-primary);
+    color: #fff;
+  }
+
+  .patient-picker-tab:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .patient-readonly-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--color-bg-secondary) 45%, var(--color-bg-primary));
+    color: var(--color-text);
+  }
+
+  .patient-readonly-card strong {
+    font-size: var(--text-sm);
+    font-weight: 700;
+  }
+
+  .patient-readonly-card span {
+    font-size: var(--text-sm);
+    color: var(--color-text-secondary);
+  }
+
+  .patient-search-panel {
+    margin-top: var(--space-2);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .patient-search-autocomplete {
+    position: relative;
+  }
+
+  .patient-search-overlay {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 40;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .patient-search-list {
+    display: flex;
+    flex-direction: column;
+    max-height: 220px;
+    overflow-y: auto;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: var(--color-bg);
+  }
+
+  .patient-search-item {
+    border: 0;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+    cursor: pointer;
+    text-align: left;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    transition: background-color var(--transition-fast);
+  }
+
+  .patient-search-item:last-child {
+    border-bottom: 0;
+  }
+
+  .patient-search-item:hover {
+    background: color-mix(in srgb, var(--color-primary) 10%, var(--color-bg));
+  }
+
+  .patient-search-item.selected {
+    background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg));
+  }
+
+  .patient-search-name {
+    font-size: var(--text-sm);
+    font-weight: 700;
+    color: var(--color-text);
+  }
+
+  .patient-search-empty {
+    padding: 10px 12px;
+    border: 0;
+    border-radius: var(--radius-md);
+    color: var(--color-text-secondary);
+    font-size: var(--text-sm);
+    background: var(--color-bg);
+  }
+
+  .selected-patient-summary {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: var(--text-sm);
+    color: var(--color-text);
+    background: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-primary));
+    border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+    border-radius: var(--radius-md);
+    padding: 8px 10px;
+  }
+
+  .quick-patient-panel {
+    margin-top: var(--space-2);
+    padding: var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--color-bg-secondary) 45%, var(--color-bg-primary));
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .quick-patient-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .field-error {
+    color: var(--color-error);
     font-size: var(--text-xs);
   }
 
@@ -1894,10 +2384,23 @@
       grid-template-columns: 1fr;
     }
 
+    .calendar-toolbar-top {
+      align-items: flex-start;
+    }
+
     .toolbar-controls {
       margin-left: 0;
       width: 100%;
-      justify-content: space-between;
+      justify-content: flex-start;
+    }
+
+    .toolbar-jump {
+      width: 100%;
+    }
+
+    .toolbar-jump input {
+      min-width: 0;
+      width: 100%;
     }
 
     .legend-note {

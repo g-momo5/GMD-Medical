@@ -315,6 +315,7 @@ export interface Appuntamento {
   paziente_cognome?: string;
   paziente_codice_fiscale?: string;
   paziente_data_nascita?: string;
+  paziente_telefono?: string;
 }
 
 export interface CreateAppuntamentoManualeInput {

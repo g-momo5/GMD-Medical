@@ -193,29 +193,6 @@
     <div class="form-row">
       <div class="form-col">
         <Input
-          id="codice_fiscale"
-          label="Codice Fiscale"
-          bind:value={formData.codice_fiscale}
-          error={formErrors.codice_fiscale}
-          placeholder="RSSMRA80E15H501Z"
-          format="uppercase"
-          required
-        />
-      </div>
-      <div class="form-col">
-        <Select
-          id="sesso"
-          label="Sesso"
-          bind:value={formData.sesso}
-          options={sessoOptions}
-          required
-        />
-      </div>
-    </div>
-
-    <div class="form-row">
-      <div class="form-col">
-        <Input
           id="data_nascita"
           type="date"
           label="Data di Nascita"
@@ -234,6 +211,29 @@
           error={formErrors.luogo_nascita}
           minChars={3}
           onSelect={(item: AutocompleteItem) => { codiceCatastaleNascita = item.codiceCatastale; }}
+          required
+        />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-col">
+        <Input
+          id="codice_fiscale"
+          label="Codice Fiscale"
+          bind:value={formData.codice_fiscale}
+          error={formErrors.codice_fiscale}
+          placeholder="RSSMRA80E15H501Z"
+          format="uppercase"
+          required
+        />
+      </div>
+      <div class="form-col">
+        <Select
+          id="sesso"
+          label="Sesso"
+          bind:value={formData.sesso}
+          options={sessoOptions}
           required
         />
       </div>

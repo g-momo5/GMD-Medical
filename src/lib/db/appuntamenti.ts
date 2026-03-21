@@ -408,7 +408,8 @@ async function getOverlappingAppointments(params: {
       p.nome AS paziente_nome,
       p.cognome AS paziente_cognome,
       p.codice_fiscale AS paziente_codice_fiscale,
-      p.data_nascita AS paziente_data_nascita
+      p.data_nascita AS paziente_data_nascita,
+      p.telefono AS paziente_telefono
     FROM appuntamenti a
     INNER JOIN pazienti p ON p.id = a.paziente_id
     WHERE a.ambulatorio_id = ?
@@ -781,7 +782,8 @@ export async function getAppuntamentoById(id: number): Promise<Appuntamento | nu
       p.nome AS paziente_nome,
       p.cognome AS paziente_cognome,
       p.codice_fiscale AS paziente_codice_fiscale,
-      p.data_nascita AS paziente_data_nascita
+      p.data_nascita AS paziente_data_nascita,
+      p.telefono AS paziente_telefono
     FROM appuntamenti a
     INNER JOIN pazienti p ON p.id = a.paziente_id
     WHERE a.id = ?`,
@@ -799,7 +801,8 @@ export async function getAppuntamentoBySourceVisitaId(visitaId: number): Promise
       p.nome AS paziente_nome,
       p.cognome AS paziente_cognome,
       p.codice_fiscale AS paziente_codice_fiscale,
-      p.data_nascita AS paziente_data_nascita
+      p.data_nascita AS paziente_data_nascita,
+      p.telefono AS paziente_telefono
     FROM appuntamenti a
     INNER JOIN pazienti p ON p.id = a.paziente_id
     WHERE a.source_visita_id = ?
@@ -823,7 +826,8 @@ export async function getAppuntamentiByRange(params: {
       p.nome AS paziente_nome,
       p.cognome AS paziente_cognome,
       p.codice_fiscale AS paziente_codice_fiscale,
-      p.data_nascita AS paziente_data_nascita
+      p.data_nascita AS paziente_data_nascita,
+      p.telefono AS paziente_telefono
     FROM appuntamenti a
     INNER JOIN pazienti p ON p.id = a.paziente_id
     WHERE a.ambulatorio_id = ?

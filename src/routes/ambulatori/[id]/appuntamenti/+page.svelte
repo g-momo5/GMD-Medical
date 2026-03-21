@@ -15,6 +15,7 @@
   import itLocale from '@fullcalendar/core/locales/it';
   import FullCalendar from 'svelte-fullcalendar';
   import { sidebarCollapsedStore } from '$lib/stores/sidebar';
+  import { ambulatorioStore } from '$lib/stores/ambulatorio';
   import { toastStore } from '$lib/stores/toast';
   import {
     createAppuntamentoManuale,
@@ -40,6 +41,8 @@
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import { jsPDF } from 'jspdf';
+  import { resolveAmbulatorioReportDirectory, sanitizeReportFolderName } from '$lib/utils/report-storage';
 
   type CalendarView = 'dayGridMonth' | 'timeGridDay';
 
@@ -108,6 +111,7 @@
   let searchingFirstSlotMode: FirstSlotSearchMode | null = null;
   let nextUrgentSearchCursor: string | null = null;
   let nextQuarterHourSearchCursor: string | null = null;
+  let printingDailyAgenda = false;
   let appointmentForm: AppointmentFormState = {
     pazienteId: 0,
     date: formatDateOnly(today),
@@ -139,6 +143,7 @@
   $: isFollowUpAppointment = editingAppointment?.origine === 'followup_visita';
   $: modalTitle = isEditing ? 'Modifica Appuntamento' : 'Nuovo Appuntamento';
   $: currentDayCount = dailyCounts.get(jumpDate) ?? 0;
+  $: currentAmbulatorio = $ambulatorioStore.current;
   $: normalizedPatientSearchTerm = patientSearchTerm.trim().toLowerCase();
   $: filteredPatientsForModal = ambulatorioPatients
     .filter((patient) => {
@@ -361,6 +366,186 @@
     return `${formatDateOnly(date)}T${formatTimeOnly(date)}`;
   }
 
+  function formatLongDateLabel(value: string): string {
+    if (!value) {
+      return '';
+    }
+
+    const parsed = new Date(`${value}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) {
+      return value;
+    }
+
+    return new Intl.DateTimeFormat('it-IT', {
+      weekday: 'long',
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric'
+    }).format(parsed);
+  }
+
+  function getDailyAppointmentsForDate(dateValue: string): Appuntamento[] {
+    return appuntamenti
+      .filter((appointment) => normalizeAppuntamentoDateTimeInput(appointment.data_ora_inizio).slice(0, 10) === dateValue)
+      .sort((left, right) =>
+        normalizeAppuntamentoDateTimeInput(left.data_ora_inizio).localeCompare(
+          normalizeAppuntamentoDateTimeInput(right.data_ora_inizio)
+        )
+      );
+  }
+
+  function buildDailyAgendaPdf(appointments: Appuntamento[], dateValue: string): Uint8Array {
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'pt',
+      format: 'a4'
+    });
+
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const leftMargin = 44;
+    const rightMargin = 44;
+    const maxTextWidth = pageWidth - leftMargin - rightMargin;
+    const lineHeight = 15;
+    let y = 48;
+
+    const ambulatorioName = currentAmbulatorio?.nome || `Ambulatorio ${ambulatorioId}`;
+    const prettyDate = formatLongDateLabel(dateValue) || dateValue;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text('Elenco Pazienti Giornaliero', leftMargin, y);
+    y += 22;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(11);
+    doc.text(`Ambulatorio: ${ambulatorioName}`, leftMargin, y);
+    y += 16;
+    doc.text(`Data: ${prettyDate}`, leftMargin, y);
+    y += 16;
+    doc.text(`Totale appuntamenti: ${appointments.length}`, leftMargin, y);
+    y += 20;
+
+    const printLine = (line: string) => {
+      const wrapped = doc.splitTextToSize(line, maxTextWidth) as string[];
+      const blockHeight = wrapped.length * lineHeight;
+      if (y + blockHeight > pageHeight - 44) {
+        doc.addPage();
+        y = 48;
+      }
+      doc.text(wrapped, leftMargin, y);
+      y += blockHeight + 4;
+    };
+
+    if (appointments.length === 0) {
+      doc.setFont('helvetica', 'italic');
+      printLine('Nessun appuntamento programmato per questa giornata.');
+    } else {
+      doc.setFont('helvetica', 'normal');
+      for (const appointment of appointments) {
+        const start = normalizeAppuntamentoDateTimeInput(appointment.data_ora_inizio).slice(11, 16);
+        const end = normalizeAppuntamentoDateTimeInput(appointment.data_ora_fine).slice(11, 16);
+        const patientName = [appointment.paziente_cognome, appointment.paziente_nome]
+          .filter(Boolean)
+          .join(' ')
+          .trim() || 'Paziente non specificato';
+        const birthDate = formatBirthDateLabel(appointment.paziente_data_nascita);
+        const reason = String(appointment.motivo || '').trim();
+        const suffix = reason ? ` - ${reason}` : '';
+        const birthSuffix = birthDate ? ` (${birthDate})` : '';
+        printLine(`${start}-${end}  ${patientName}${birthSuffix}${suffix}`);
+      }
+    }
+
+    doc.autoPrint();
+    const arrayBuffer = doc.output('arraybuffer');
+    return new Uint8Array(arrayBuffer);
+  }
+
+  function triggerPdfPrint(pdfBytes: Uint8Array): void {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.width = '1px';
+    iframe.style.height = '1px';
+    iframe.style.border = '0';
+    iframe.style.opacity = '0';
+    iframe.style.pointerEvents = 'none';
+    iframe.src = url;
+
+    iframe.onload = () => {
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      }, 240);
+    };
+
+    document.body.appendChild(iframe);
+    window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+      iframe.remove();
+    }, 60_000);
+  }
+
+  async function printDailyAgenda(): Promise<void> {
+    if (printingDailyAgenda || !jumpDate || !ambulatorioId) {
+      return;
+    }
+
+    printingDailyAgenda = true;
+    try {
+      const appointments = getDailyAppointmentsForDate(jumpDate);
+      const pdfBytes = buildDailyAgendaPdf(appointments, jumpDate);
+
+      const [{ mkdir, writeFile }, { join }, { openPath }] = await Promise.all([
+        import('@tauri-apps/plugin-fs'),
+        import('@tauri-apps/api/path'),
+        import('@tauri-apps/plugin-opener')
+      ]);
+
+      const ambulatorioName = currentAmbulatorio?.nome || `Ambulatorio ${ambulatorioId}`;
+      const ambulatorioDirectory = await resolveAmbulatorioReportDirectory(ambulatorioName);
+      const printDirectory = await join(ambulatorioDirectory, 'Stampe Agenda');
+      await mkdir(printDirectory, { recursive: true });
+
+      const safeAmbulatorioName = sanitizeReportFolderName(ambulatorioName).replace(/\s+/g, '_');
+      const fileDate = jumpDate.replace(/-/g, '');
+      const outputPath = await join(
+        printDirectory,
+        `agenda_pazienti_${safeAmbulatorioName}_${fileDate}.pdf`
+      );
+
+      await writeFile(outputPath, pdfBytes, { create: true });
+
+      let printTriggered = false;
+      try {
+        triggerPdfPrint(pdfBytes);
+        printTriggered = true;
+      } catch (printError) {
+        console.warn('Stampa PDF da webview non disponibile:', printError);
+      }
+
+      if (!printTriggered) {
+        await openPath(outputPath);
+      }
+
+      toastStore.show(
+        'success',
+        `PDF agenda creato${printTriggered ? ' e inviato in stampa' : ''}: ${outputPath}`
+      );
+    } catch (error) {
+      console.error('Errore stampa agenda giornaliera:', error);
+      toastStore.show('error', `Errore stampa agenda giornaliera: ${getErrorMessage(error)}`);
+    } finally {
+      printingDailyAgenda = false;
+    }
+  }
+
   function addMinutesToDateTime(dateTime: string, minutes: number): string {
     const date = new Date(normalizeAppuntamentoDateTimeInput(dateTime));
     date.setMinutes(date.getMinutes() + minutes);
@@ -452,10 +637,22 @@
       .trim();
     const normalizedPatientName = patientName || 'Appuntamento';
     const birthDate = formatBirthDateLabel(appointment.paziente_data_nascita);
+    const phone = String(appointment.paziente_telefono || '').trim();
     const reason = String(appointment.motivo || '').trim();
 
-    const heading = birthDate ? `${normalizedPatientName} (${birthDate})` : normalizedPatientName;
-    return reason ? `${heading} - ${reason}` : heading;
+    const heading = birthDate
+      ? `${normalizedPatientName} (${birthDate})`
+      : normalizedPatientName;
+
+    const tail: string[] = [];
+    if (phone) {
+      tail.push(phone);
+    }
+    if (reason) {
+      tail.push(reason);
+    }
+
+    return tail.length > 0 ? `${heading} - ${tail.join(' - ')}` : heading;
   }
 
   function formatBirthDateLabel(value: string | undefined): string {
@@ -1471,6 +1668,19 @@
         </span>
         <span class="text">Nuovo Appuntamento</span>
       </button>
+      {#if currentView === 'timeGridDay'}
+        <button
+          type="button"
+          class="btn-icon-text btn-print-day"
+          on:click={printDailyAgenda}
+          disabled={printingDailyAgenda || loading}
+        >
+          <span class="icon">
+            <Icon name="file-text" size={20} />
+          </span>
+          <span class="text">{printingDailyAgenda ? 'Stampa...' : 'Stampa'}</span>
+        </button>
+      {/if}
     </div>
   </PageHeader>
 
@@ -2125,6 +2335,21 @@
 
   .btn-jump {
     height: 34px;
+  }
+
+  .btn-print-day {
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-primary));
+    color: color-mix(in srgb, var(--color-primary) 88%, var(--color-text));
+    border-color: color-mix(in srgb, var(--color-primary) 36%, transparent);
+  }
+
+  .btn-print-day:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-primary) 20%, var(--color-bg-primary));
+    border-color: color-mix(in srgb, var(--color-primary) 48%, transparent);
   }
 
   .slot-btn-urgent {

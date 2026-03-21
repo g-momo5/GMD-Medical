@@ -15,8 +15,10 @@
   let filteredItems: AutocompleteItem[] = [];
   let showDropdown = false;
   let selectedIndex = -1;
+  let isFocused = false;
 
-  $: if (value !== searchTerm) {
+  // Evita di sovrascrivere il testo mentre l'utente sta digitando.
+  $: if (!isFocused && value !== searchTerm) {
     searchTerm = value;
   }
 
@@ -72,6 +74,7 @@
   function handleBlur(): void {
     // Ritardo per permettere il click su un item
     setTimeout(() => {
+      isFocused = false;
       showDropdown = false;
       selectedIndex = -1;
     }, 200);
@@ -84,6 +87,8 @@
   }
 
   function handleFocus(): void {
+    isFocused = true;
+
     if (searchTerm.length < minChars) {
       return;
     }

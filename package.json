@@ -25,6 +25,7 @@
     "@tauri-apps/plugin-sql": "^2.3.1",
     "bcryptjs": "^3.0.3",
     "docxtemplater": "^3.68.3",
+    "jspdf": "^4.2.1",
     "lucide-svelte": "^0.577.0",
     "pizzip": "^3.2.0",
     "svelte-fullcalendar": "^3.0.0"

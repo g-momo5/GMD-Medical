@@ -101,6 +101,8 @@
   let showAppointmentModal = false;
   let patientModalTab: PatientModalTab = 'search';
   let patientSearchTerm = '';
+  let patientSearchFocused = false;
+  let patientSearchBlurTimeout: ReturnType<typeof setTimeout> | null = null;
   let editingAppointment: Appuntamento | null = null;
   let searchingFirstSlotMode: FirstSlotSearchMode | null = null;
   let nextUrgentSearchCursor: string | null = null;
@@ -197,6 +199,11 @@
   }
 
   function resetPatientModalState(): void {
+    if (patientSearchBlurTimeout) {
+      clearTimeout(patientSearchBlurTimeout);
+      patientSearchBlurTimeout = null;
+    }
+    patientSearchFocused = false;
     patientModalTab = 'search';
     patientSearchTerm = '';
     resetQuickPatientForm();
@@ -204,6 +211,11 @@
   }
 
   function switchPatientModalTab(nextTab: PatientModalTab): void {
+    if (patientSearchBlurTimeout) {
+      clearTimeout(patientSearchBlurTimeout);
+      patientSearchBlurTimeout = null;
+    }
+    patientSearchFocused = false;
     patientModalTab = nextTab;
     if (nextTab === 'search') {
       resetQuickPatientErrors();
@@ -222,6 +234,25 @@
     if (patientLabel) {
       patientSearchTerm = patientLabel;
     }
+  }
+
+  function handlePatientSearchFocus(): void {
+    if (patientSearchBlurTimeout) {
+      clearTimeout(patientSearchBlurTimeout);
+      patientSearchBlurTimeout = null;
+    }
+    patientSearchFocused = true;
+  }
+
+  function handlePatientSearchBlur(): void {
+    if (patientSearchBlurTimeout) {
+      clearTimeout(patientSearchBlurTimeout);
+    }
+
+    patientSearchBlurTimeout = setTimeout(() => {
+      patientSearchFocused = false;
+      patientSearchBlurTimeout = null;
+    }, 140);
   }
 
   function validateQuickPatientForm(): boolean {
@@ -1488,16 +1519,26 @@
             <div class="patient-search-autocomplete">
               <div class="form-group">
                 <label for="appointment_patient_search">Cerca paziente</label>
-                <input
-                  id="appointment_patient_search"
-                  type="text"
-                  bind:value={patientSearchTerm}
-                  placeholder="Cerca per cognome o nome..."
-                  disabled={loadingPatients || creatingQuickPatient}
-                />
+                <div class="patient-search-input-wrap">
+                  <input
+                    id="appointment_patient_search"
+                    type="text"
+                    bind:value={patientSearchTerm}
+                    placeholder="Cerca per cognome o nome..."
+                    disabled={loadingPatients || creatingQuickPatient}
+                    on:focus={handlePatientSearchFocus}
+                    on:blur={handlePatientSearchBlur}
+                    class:has-selection={Boolean(selectedAppointmentPatient)}
+                  />
+                  {#if selectedAppointmentPatient}
+                    <span class="patient-selected-check" title="Paziente selezionato" aria-label="Paziente selezionato">
+                      ✓
+                    </span>
+                  {/if}
+                </div>
               </div>
 
-              {#if normalizedPatientSearchTerm.length >= MIN_PATIENT_SEARCH_CHARS}
+              {#if patientSearchFocused && normalizedPatientSearchTerm.length >= MIN_PATIENT_SEARCH_CHARS}
                 {#if loadingPatients}
                   <div class="patient-search-empty patient-search-overlay">Caricamento pazienti...</div>
                 {:else if filteredPatientsForModal.length === 0}
@@ -1521,13 +1562,6 @@
               {/if}
             </div>
 
-            {#if selectedAppointmentPatient}
-              <div class="selected-patient-summary">
-                Selezionato:
-                <strong>{selectedAppointmentPatient.cognome} {selectedAppointmentPatient.nome}</strong>
-                <span>({formatBirthDateLabel(selectedAppointmentPatient.data_nascita) || '-'})</span>
-              </div>
-            {/if}
           </div>
         {:else}
           <div class="quick-patient-panel">
@@ -2259,6 +2293,29 @@
     position: relative;
   }
 
+  .patient-search-input-wrap {
+    position: relative;
+  }
+
+  .patient-search-input-wrap input.has-selection {
+    padding-right: 2.2rem;
+  }
+
+  .patient-selected-check {
+    position: absolute;
+    top: 50%;
+    right: 10px;
+    transform: translateY(-50%);
+    color: var(--color-success);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 800;
+    line-height: 1;
+    pointer-events: none;
+  }
+
   .patient-search-overlay {
     position: absolute;
     top: calc(100% + 4px);
@@ -2319,19 +2376,6 @@
     color: var(--color-text-secondary);
     font-size: var(--text-sm);
     background: var(--color-bg);
-  }
-
-  .selected-patient-summary {
-    display: inline-flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-    font-size: var(--text-sm);
-    color: var(--color-text);
-    background: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-primary));
-    border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
-    border-radius: var(--radius-md);
-    padding: 8px 10px;
   }
 
   .quick-patient-panel {

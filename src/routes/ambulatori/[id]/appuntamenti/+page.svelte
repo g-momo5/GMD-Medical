@@ -103,6 +103,7 @@
   let patientSearchTerm = '';
   let patientSearchFocused = false;
   let patientSearchBlurTimeout: ReturnType<typeof setTimeout> | null = null;
+  let showPatientSearchSuggestions = false;
   let editingAppointment: Appuntamento | null = null;
   let searchingFirstSlotMode: FirstSlotSearchMode | null = null;
   let nextUrgentSearchCursor: string | null = null;
@@ -123,6 +124,7 @@
   let normalizedPatientSearchTerm = '';
   let filteredPatientsForModal: Paziente[] = [];
   let selectedAppointmentPatient: Paziente | null = null;
+  let showSelectedPatientCheck = false;
 
   $: ambulatorioPatients = patients
     .filter((patient) => patient.ambulatorio_id === ambulatorioId)
@@ -156,6 +158,18 @@
     .slice(0, MAX_PATIENT_SUGGESTIONS);
   $: selectedAppointmentPatient =
     ambulatorioPatients.find((patient) => patient.id === appointmentForm.pazienteId) ?? null;
+  $: showSelectedPatientCheck =
+    Boolean(selectedAppointmentPatient) &&
+    normalizedPatientSearchTerm.length > 0 &&
+    normalizePatientDisplayLabel(patientSearchTerm) ===
+      normalizePatientDisplayLabel(
+        `${selectedAppointmentPatient?.cognome ?? ''} ${selectedAppointmentPatient?.nome ?? ''}`
+      );
+  $: showPatientSearchSuggestions =
+    patientModalTab === 'search' &&
+    patientSearchFocused &&
+    !showSelectedPatientCheck &&
+    normalizedPatientSearchTerm.length >= MIN_PATIENT_SEARCH_CHARS;
   $: standardVisitDurationMinutes = Math.max(
     10,
     operatingSettings?.durataStandardVisitaMinuti ?? DEFAULT_APPOINTMENT_DURATION_MINUTES
@@ -225,14 +239,57 @@
     patientSearchTerm = '';
   }
 
-  function selectPatientForAppointment(patientId: number, patientLabel?: string): void {
-    appointmentForm = {
-      ...appointmentForm,
-      pazienteId: Number(patientId)
-    };
+  function getPatientDisplayLabel(patient: Pick<Paziente, 'cognome' | 'nome'>): string {
+    return `${patient.cognome} ${patient.nome}`.trim();
+  }
 
-    if (patientLabel) {
-      patientSearchTerm = patientLabel;
+  function normalizePatientDisplayLabel(label: string): string {
+    return label.trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  function findPatientByDisplayLabel(label: string): Paziente | null {
+    const normalizedLabel = normalizePatientDisplayLabel(label);
+    if (!normalizedLabel) {
+      return null;
+    }
+
+    return (
+      ambulatorioPatients.find(
+        (patient) => normalizePatientDisplayLabel(getPatientDisplayLabel(patient)) === normalizedLabel
+      ) ?? null
+    );
+  }
+
+  function handlePatientSearchInput(): void {
+    const normalizedInput = normalizePatientDisplayLabel(patientSearchTerm);
+
+    if (normalizedInput.length === 0) {
+      if (appointmentForm.pazienteId !== 0) {
+        appointmentForm = {
+          ...appointmentForm,
+          pazienteId: 0
+        };
+      }
+      return;
+    }
+
+    const matchedPatient = findPatientByDisplayLabel(patientSearchTerm);
+
+    if (matchedPatient) {
+      if (appointmentForm.pazienteId !== matchedPatient.id) {
+        appointmentForm = {
+          ...appointmentForm,
+          pazienteId: matchedPatient.id
+        };
+      }
+      return;
+    }
+
+    if (appointmentForm.pazienteId !== 0) {
+      appointmentForm = {
+        ...appointmentForm,
+        pazienteId: 0
+      };
     }
   }
 
@@ -252,7 +309,29 @@
     patientSearchBlurTimeout = setTimeout(() => {
       patientSearchFocused = false;
       patientSearchBlurTimeout = null;
-    }, 140);
+    }, 100);
+  }
+
+  function handlePatientSearchOptionSelect(patient: Paziente): void {
+    selectPatientForAppointment(patient.id, getPatientDisplayLabel(patient));
+  }
+
+  function selectPatientForAppointment(patientId: number, patientLabel?: string): void {
+    appointmentForm = {
+      ...appointmentForm,
+      pazienteId: Number(patientId)
+    };
+
+    const selectedPatient =
+      ambulatorioPatients.find((patient) => patient.id === Number(patientId)) ?? null;
+    if (selectedPatient) {
+      patientSearchTerm = getPatientDisplayLabel(selectedPatient);
+      return;
+    }
+
+    if (patientLabel) {
+      patientSearchTerm = patientLabel.trim();
+    }
   }
 
   function validateQuickPatientForm(): boolean {
@@ -1135,9 +1214,19 @@
   }
 
   async function saveAppointment(): Promise<void> {
-    if (!appointmentForm.pazienteId) {
+    const matchedPatientByLabel = findPatientByDisplayLabel(patientSearchTerm);
+    const resolvedPatientId = appointmentForm.pazienteId || matchedPatientByLabel?.id || 0;
+
+    if (!resolvedPatientId) {
       toastStore.show('error', 'Seleziona un paziente');
       return;
+    }
+
+    if (appointmentForm.pazienteId !== resolvedPatientId) {
+      appointmentForm = {
+        ...appointmentForm,
+        pazienteId: resolvedPatientId
+      };
     }
 
     let startDateTime = '';
@@ -1161,7 +1250,7 @@
           updateAppuntamento(
             {
               id: editing.id,
-              paziente_id: isFollowUpAppointment ? undefined : appointmentForm.pazienteId,
+              paziente_id: isFollowUpAppointment ? undefined : resolvedPatientId,
               data_ora_inizio: startDateTime,
               data_ora_fine: endDateTime,
               motivo: appointmentForm.motivo
@@ -1186,7 +1275,7 @@
           createAppuntamentoManuale(
             {
               ambulatorio_id: ambulatorioId,
-              paziente_id: appointmentForm.pazienteId,
+              paziente_id: resolvedPatientId,
               data_ora_inizio: startDateTime,
               data_ora_fine: endDateTime,
               motivo: appointmentForm.motivo
@@ -1526,11 +1615,14 @@
                     bind:value={patientSearchTerm}
                     placeholder="Cerca per cognome o nome..."
                     disabled={loadingPatients || creatingQuickPatient}
+                    on:input={handlePatientSearchInput}
+                    on:change={handlePatientSearchInput}
                     on:focus={handlePatientSearchFocus}
                     on:blur={handlePatientSearchBlur}
-                    class:has-selection={Boolean(selectedAppointmentPatient)}
+                    class:has-selection={showSelectedPatientCheck}
+                    autocomplete="off"
                   />
-                  {#if selectedAppointmentPatient}
+                  {#if showSelectedPatientCheck}
                     <span class="patient-selected-check" title="Paziente selezionato" aria-label="Paziente selezionato">
                       ✓
                     </span>
@@ -1538,7 +1630,7 @@
                 </div>
               </div>
 
-              {#if patientSearchFocused && normalizedPatientSearchTerm.length >= MIN_PATIENT_SEARCH_CHARS}
+              {#if showPatientSearchSuggestions}
                 {#if loadingPatients}
                   <div class="patient-search-empty patient-search-overlay">Caricamento pazienti...</div>
                 {:else if filteredPatientsForModal.length === 0}
@@ -1548,13 +1640,13 @@
                     {#each filteredPatientsForModal as patient}
                       <button
                         type="button"
+                        role="option"
+                        aria-selected={appointmentForm.pazienteId === patient.id}
                         class="patient-search-item"
                         class:selected={appointmentForm.pazienteId === patient.id}
-                        on:click={() => selectPatientForAppointment(patient.id, `${patient.cognome} ${patient.nome}`)}
+                        on:mousedown|preventDefault={() => handlePatientSearchOptionSelect(patient)}
                       >
-                        <span class="patient-search-name">
-                          {patient.cognome} {patient.nome} ({formatBirthDateLabel(patient.data_nascita) || '-'})
-                        </span>
+                        {patient.cognome} {patient.nome} ({formatBirthDateLabel(patient.data_nascita) || '-'})
                       </button>
                     {/each}
                   </div>
@@ -2322,10 +2414,11 @@
     left: 0;
     right: 0;
     z-index: 40;
-    background: var(--color-bg);
+    background: var(--color-bg) !important;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-lg);
+    opacity: 1;
   }
 
   .patient-search-list {
@@ -2333,7 +2426,6 @@
     flex-direction: column;
     max-height: 220px;
     overflow-y: auto;
-    border: 0;
     border-radius: var(--radius-md);
     background: var(--color-bg);
   }
@@ -2342,13 +2434,15 @@
     border: 0;
     border-bottom: 1px solid var(--color-border);
     background: var(--color-bg);
-    cursor: pointer;
+    color: var(--color-text);
     text-align: left;
     padding: 10px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer !important;
     transition: background-color var(--transition-fast);
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   .patient-search-item:last-child {
@@ -2363,15 +2457,8 @@
     background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg));
   }
 
-  .patient-search-name {
-    font-size: var(--text-sm);
-    font-weight: 700;
-    color: var(--color-text);
-  }
-
   .patient-search-empty {
     padding: 10px 12px;
-    border: 0;
     border-radius: var(--radius-md);
     color: var(--color-text-secondary);
     font-size: var(--text-sm);

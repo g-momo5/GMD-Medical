@@ -1,0 +1,129 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag release (es. v0.1.0). Vuoto = versione da package.json"
+        required: false
+        type: string
+      release_name:
+        description: "Nome release (opzionale)"
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Tauri (Windows MSI + NSIS)
+        run: npm run tauri build -- --bundles msi,nsis
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $tag = ""
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}") {
+            $tag = "${{ github.ref_name }}"
+          } elseif ("${{ inputs.release_tag }}") {
+            $tag = "${{ inputs.release_tag }}"
+          } else {
+            $version = node -p "require('./package.json').version"
+            $tag = "v$version"
+          }
+
+          $nameInput = "${{ inputs.release_name }}"
+          if ($nameInput) {
+            $releaseName = $nameInput
+          } else {
+            $releaseName = "GMD Medical Platform $tag (Windows)"
+          }
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "release_name=$releaseName" >> $env:GITHUB_OUTPUT
+
+      - name: Collect Windows bundles
+        id: bundles
+        shell: pwsh
+        run: |
+          $patterns = @(
+            "src-tauri/target/release/bundle/msi/*.msi",
+            "src-tauri/target/release/bundle/nsis/*.exe"
+          )
+          $files = @()
+          foreach ($pattern in $patterns) {
+            $files += Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          }
+
+          if (-not $files -or $files.Count -eq 0) {
+            Write-Error "Nessun bundle Windows trovato (MSI/NSIS)."
+            exit 1
+          }
+
+          Write-Host "Asset trovati:"
+          $files | ForEach-Object { Write-Host " - $_" }
+
+          "assets<<EOF" >> $env:GITHUB_OUTPUT
+          ($files -join "`n") >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
+
+      - name: Create release if missing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_NAME: ${{ steps.meta.outputs.release_name }}
+        run: |
+          gh release view "$env:TAG" --repo "$env:GITHUB_REPOSITORY" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Release $env:TAG non trovata: la creo."
+            gh release create "$env:TAG" --repo "$env:GITHUB_REPOSITORY" --target "${{ github.sha }}" --title "$env:RELEASE_NAME" --notes "Automated Windows build."
+          } else {
+            Write-Host "Release $env:TAG già presente: verranno sostituiti gli asset."
+          }
+
+      - name: Upload / replace release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          ASSETS: ${{ steps.bundles.outputs.assets }}
+        run: |
+          $files = $env:ASSETS -split "`n" | Where-Object { $_ -and $_.Trim().Length -gt 0 }
+          foreach ($file in $files) {
+            Write-Host "Upload con sostituzione: $file"
+            gh release upload "$env:TAG" "$file" --repo "$env:GITHUB_REPOSITORY" --clobber
+          }
+
+      - name: Upload build artifacts to workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundles-${{ steps.meta.outputs.tag }}
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

@@ -1181,6 +1181,22 @@ export async function deleteAppuntamento(id: number): Promise<void> {
   await db.execute('DELETE FROM appuntamenti WHERE id = ?', [normalizeIntegerForWrite(id)]);
 }
 
+export async function updateAppuntamentoSourceVisitaId(params: {
+  appuntamentoId: number;
+  sourceVisitaId: number | null;
+}): Promise<void> {
+  const db = await initDatabase();
+  await db.execute(
+    `UPDATE appuntamenti
+     SET source_visita_id = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [
+      normalizeIntegerForWrite(params.sourceVisitaId),
+      normalizeIntegerForWrite(params.appuntamentoId)
+    ]
+  );
+}
+
 export async function createFollowUpAppuntamentoFromVisita(params: {
   visitaId: number;
   ambulatorioId: number;

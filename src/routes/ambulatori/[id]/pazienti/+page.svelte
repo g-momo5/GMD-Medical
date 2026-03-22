@@ -34,7 +34,7 @@
   let pazienteToDelete: Paziente | null = null;
   let selectedPaziente: Paziente | null = null;
   let showPatientDetailsModal = false;
-  let selectedPazienteVisite: Array<Visita & { medico_label: string }> = [];
+  let selectedPazienteVisite: Array<Visita & { medico_label: string; versione_label: string }> = [];
   let loadingSelectedPazienteVisite = false;
 
   // Dati per autocomplete
@@ -69,6 +69,7 @@
   let displayedPazienti: Paziente[] = [];
   let patientTableMaxHeight: string | undefined = undefined;
   const MIN_SEARCH_TERM_LENGTH = 2;
+  let lastIsSearchMode = false;
 
   $: ambulatorioId = parseInt($page.params.id || '0');
   $: isSearchMode = $page.url.searchParams.get('mode') === 'search';
@@ -79,12 +80,13 @@
   $: searchPlaceholder = isSearchMode
     ? 'Scrivi almeno 2 caratteri per cercare per nome, cognome o codice fiscale...'
     : 'Scrivi almeno 2 caratteri per cercare per nome, cognome o codice fiscale...';
-  $: if (!isSearchMode && selectedPaziente) {
+  $: if (lastIsSearchMode && !isSearchMode && selectedPaziente) {
     clearSelectedPaziente();
   }
   $: if (isSearchMode && selectedPaziente && !filteredPazienti.some((paziente) => paziente.id === selectedPaziente?.id)) {
     clearSelectedPaziente();
   }
+  $: lastIsSearchMode = isSearchMode;
 
   // Calcola automaticamente il codice fiscale quando tutti i dati sono disponibili
   $: {
@@ -169,7 +171,8 @@
 
       selectedPazienteVisite = visite.map((visita) => ({
         ...visita,
-        medico_label: [visita.medico_cognome, visita.medico_nome].filter(Boolean).join(' ') || '-'
+        medico_label: [visita.medico_cognome, visita.medico_nome].filter(Boolean).join(' ') || '-',
+        versione_label: visita.is_current_version === 0 ? 'Versione precedente' : 'Versione corrente'
       }));
     } catch (error) {
       console.error('Errore caricamento visite paziente:', error);
@@ -198,6 +201,11 @@
       return;
     }
 
+    showPatientDetailsModal = true;
+  }
+
+  function openPatientDetailsModalFor(paziente: Paziente) {
+    selectedPaziente = paziente;
     showPatientDetailsModal = true;
   }
 
@@ -341,8 +349,9 @@
       format: (value: string) => formatDate(value)
     },
     { key: 'tipo_visita', label: 'Tipo Visita', width: '16%' },
-    { key: 'motivo', label: 'Motivo', width: '44%' },
-    { key: 'medico_label', label: 'Medico', width: '24%' }
+    { key: 'versione_label', label: 'Versione', width: '20%' },
+    { key: 'motivo', label: 'Motivo', width: '30%' },
+    { key: 'medico_label', label: 'Medico', width: '18%' }
   ];
 
   let tableColumns = managementTableColumns;
@@ -427,6 +436,13 @@
           maxHeight={patientTableMaxHeight}
         >
           <svelte:fragment slot="actions" let:row>
+            <button
+              class="btn-icon"
+              on:click={() => openPatientDetailsModalFor(row)}
+              title="Visualizza dettaglio"
+            >
+              <Icon name="eye" size={16} />
+            </button>
             <button
               class="btn-icon"
               on:click={() => openEditModal(row)}
@@ -857,16 +873,16 @@
   .patient-details-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-4);
+    gap: var(--space-3);
   }
 
   .patient-detail-item {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
-    padding: var(--space-4);
+    gap: 2px;
+    padding: var(--space-3);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
     background-color: var(--color-bg-secondary);
   }
 

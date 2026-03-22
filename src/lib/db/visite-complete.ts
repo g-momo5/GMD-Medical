@@ -13,11 +13,18 @@ import {
 import {
   buildConfirmationRequiredErrorMessage,
   createFollowUpAppuntamentoFromVisita,
+  deleteAppuntamento,
   getAppuntamentoBySourceVisitaId,
   parseFollowUpScheduling,
-  previewAppuntamentoWrite
+  previewAppuntamentoWrite,
+  updateAppuntamentoSourceVisitaId
 } from './appuntamenti';
 import { createVisita, getVisitaById, updateVisita } from './visite';
+import {
+  getVisitaEditDeleteLockedMessage,
+  getVisitaPreviousVersionLockedMessage,
+  isVisitaWithinEditDeleteWindow
+} from '../utils/visite-permissions';
 
 type FattoriRischioPayload = Partial<Omit<CreateFattoriRischioCVInput, 'visita_id'>>;
 
@@ -39,17 +46,37 @@ function hasMeaningfulFattoriRischioCV(input: FattoriRischioPayload): boolean {
 async function ensureFollowUpCanBeScheduled(params: {
   ambulatorioId: number;
   dataOraProssimaVisita: string;
+  appointmentIdForUpdate?: number;
   options?: AppuntamentoWriteOptions;
 }): Promise<void> {
   const preview = await previewAppuntamentoWrite({
     ambulatorioId: params.ambulatorioId,
     dataOraInizio: params.dataOraProssimaVisita,
+    appointmentIdForUpdate: params.appointmentIdForUpdate,
     options: params.options
   });
 
   if (!preview.saved && preview.requirements) {
     throw new Error(buildConfirmationRequiredErrorMessage(preview.requirements));
   }
+}
+
+function normalizeFollowUpMotivo(value: string | null | undefined): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function isSameFollowUpSchedule(
+  left: { dataOraProssimaVisita: string; motivoProssimaVisita: string } | null,
+  right: { dataOraProssimaVisita: string; motivoProssimaVisita: string } | null
+): boolean {
+  if (!left || !right) {
+    return false;
+  }
+
+  return (
+    left.dataOraProssimaVisita === right.dataOraProssimaVisita &&
+    normalizeFollowUpMotivo(left.motivoProssimaVisita) === normalizeFollowUpMotivo(right.motivoProssimaVisita)
+  );
 }
 
 export async function createVisitaCompleta(input: {
@@ -184,4 +211,114 @@ export async function updateVisitaCompleta(input: {
   if (!followUpCreation.saved && followUpCreation.requirements) {
     throw new Error(buildConfirmationRequiredErrorMessage(followUpCreation.requirements));
   }
+}
+
+export async function createVisitaVersioneCompleta(input: {
+  sourceVisitaId: number;
+  visita: CreateVisitaInput;
+  fattoriRischioCV: Omit<CreateFattoriRischioCVInput, 'visita_id'>;
+  followUpWriteOptions?: AppuntamentoWriteOptions;
+}): Promise<number> {
+  const sourceVisita = await getVisitaById(input.sourceVisitaId);
+  if (!sourceVisita) {
+    throw new Error(`Visita ${input.sourceVisitaId} non trovata`);
+  }
+
+  if (sourceVisita.is_current_version === 0) {
+    throw new Error(getVisitaPreviousVersionLockedMessage());
+  }
+
+  if (!isVisitaWithinEditDeleteWindow(sourceVisita.data_visita)) {
+    throw new Error(getVisitaEditDeleteLockedMessage());
+  }
+
+  const previousFollowUpScheduling = parseFollowUpScheduling(sourceVisita.pianificazione_followup);
+  const nextFollowUpScheduling = parseFollowUpScheduling(input.visita.pianificazione_followup);
+  const sameFollowUpScheduling = isSameFollowUpSchedule(previousFollowUpScheduling, nextFollowUpScheduling);
+  const existingSourceAppointment = await getAppuntamentoBySourceVisitaId(sourceVisita.id);
+
+  if (!sameFollowUpScheduling && nextFollowUpScheduling) {
+    await ensureFollowUpCanBeScheduled({
+      ambulatorioId: input.visita.ambulatorio_id,
+      dataOraProssimaVisita: nextFollowUpScheduling.dataOraProssimaVisita,
+      appointmentIdForUpdate: existingSourceAppointment?.id,
+      options: input.followUpWriteOptions
+    });
+  } else if (sameFollowUpScheduling && nextFollowUpScheduling && !existingSourceAppointment) {
+    await ensureFollowUpCanBeScheduled({
+      ambulatorioId: input.visita.ambulatorio_id,
+      dataOraProssimaVisita: nextFollowUpScheduling.dataOraProssimaVisita,
+      options: input.followUpWriteOptions
+    });
+  }
+
+  const newVisitaId = await createVisita({
+    ...input.visita,
+    previous_version_id: sourceVisita.id,
+    is_current_version: 1
+  });
+
+  await updateVisita({
+    id: sourceVisita.id,
+    is_current_version: 0
+  });
+
+  if (hasMeaningfulFattoriRischioCV(input.fattoriRischioCV)) {
+    await createFattoriRischioCV({
+      ...input.fattoriRischioCV,
+      visita_id: newVisitaId
+    });
+  }
+
+  if (!nextFollowUpScheduling) {
+    if (existingSourceAppointment) {
+      await deleteAppuntamento(existingSourceAppointment.id);
+    }
+
+    return newVisitaId;
+  }
+
+  if (sameFollowUpScheduling) {
+    if (existingSourceAppointment) {
+      await updateAppuntamentoSourceVisitaId({
+        appuntamentoId: existingSourceAppointment.id,
+        sourceVisitaId: newVisitaId
+      });
+      return newVisitaId;
+    }
+
+    const followUpCreation = await createFollowUpAppuntamentoFromVisita({
+      visitaId: newVisitaId,
+      ambulatorioId: input.visita.ambulatorio_id,
+      pazienteId: input.visita.paziente_id,
+      dataOraInizio: nextFollowUpScheduling.dataOraProssimaVisita,
+      motivo: nextFollowUpScheduling.motivoProssimaVisita,
+      options: input.followUpWriteOptions
+    });
+
+    if (!followUpCreation.saved && followUpCreation.requirements) {
+      throw new Error(buildConfirmationRequiredErrorMessage(followUpCreation.requirements));
+    }
+
+    return newVisitaId;
+  }
+
+  const followUpCreation = await createFollowUpAppuntamentoFromVisita({
+    visitaId: newVisitaId,
+    ambulatorioId: input.visita.ambulatorio_id,
+    pazienteId: input.visita.paziente_id,
+    dataOraInizio: nextFollowUpScheduling.dataOraProssimaVisita,
+    motivo: nextFollowUpScheduling.motivoProssimaVisita,
+    options: input.followUpWriteOptions
+  });
+
+  if (!followUpCreation.saved && followUpCreation.requirements) {
+    throw new Error(buildConfirmationRequiredErrorMessage(followUpCreation.requirements));
+  }
+
+  if (existingSourceAppointment) {
+    await deleteAppuntamento(existingSourceAppointment.id);
+  }
+
+  return newVisitaId;
 }

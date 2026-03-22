@@ -1,36 +1,69 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { page } from '$app/stores';
   import { ambulatorioStore } from '$lib/stores/ambulatorio';
-  import { authStore } from '$lib/stores/auth';
   import { sidebarCollapsedStore } from '$lib/stores/sidebar';
   import { toastStore } from '$lib/stores/toast';
   import {
     getVisiteByAmbulatorio,
-    searchVisite,
     deleteVisita
   } from '$lib/db/visite';
-  import { createVisitaCompleta, updateVisitaCompleta } from '$lib/db/visite-complete';
+  import {
+    getVisitaEditDeleteLockedMessage,
+    getVisitaPreviousVersionLockedMessage,
+    isVisitaWithinEditDeleteWindow
+  } from '$lib/utils/visite-permissions';
   import Card from '$lib/components/Card.svelte';
   import Input from '$lib/components/Input.svelte';
+  import Select from '$lib/components/Select.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import Button from '$lib/components/Button.svelte';
-  import VisitFormModal from '$lib/components/VisitFormModal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import type { Visita } from '$lib/db/types';
 
   $: ambulatorio = $ambulatorioStore.current;
-  $: user = $authStore.user;
 
   let visite: Visita[] = [];
+  type SortKey = 'data' | 'paziente' | 'tipo' | 'medico';
+  type SortDirection = 'asc' | 'desc';
+  let sortKey: SortKey = 'data';
+  let sortDirection: SortDirection = 'desc';
+  let filteredVisite: Visita[] = [];
+  let sortedVisite: Visita[] = [];
   let loading = true;
-  let searchTerm = '';
-  let showVisitModal = false;
+  let filterDataFrom = '';
+  let filterDataTo = '';
+  let filterPaziente = '';
+  let filterTipo = '';
+  let filterMotivo = '';
+  let filterMedico = '';
+  let hasColumnFilters = false;
+  let tipoFilterOptions: Array<{ value: string; label: string }> = [];
   let showDeleteModal = false;
-  let editingVisit: Visita | null = null;
   let visitToDelete: Visita | null = null;
+  const visitEditDeleteLockedMessage = getVisitaEditDeleteLockedMessage();
+  const visitPreviousVersionLockedMessage = getVisitaPreviousVersionLockedMessage();
+
+  function isCurrentVersion(visita: Visita): boolean {
+    return visita.is_current_version !== 0;
+  }
+
+  function getVisitaMutationBlockedReason(visita: Visita): string | null {
+    if (!isCurrentVersion(visita)) {
+      return visitPreviousVersionLockedMessage;
+    }
+
+    if (!isVisitaWithinEditDeleteWindow(visita.data_visita)) {
+      return visitEditDeleteLockedMessage;
+    }
+
+    return null;
+  }
+
+  function canMutateVisita(visita: Visita): boolean {
+    return !getVisitaMutationBlockedReason(visita);
+  }
 
   function getErrorMessage(error: unknown): string {
     if (error instanceof Error && error.message) {
@@ -56,11 +89,7 @@
 
     loading = true;
     try {
-      if (searchTerm.trim()) {
-        visite = await searchVisite(searchTerm, ambulatorio.id);
-      } else {
-        visite = await getVisiteByAmbulatorio(ambulatorio.id);
-      }
+      visite = await getVisiteByAmbulatorio(ambulatorio.id);
     } catch (error) {
       console.error('Errore caricamento visite:', error);
       // Non mostrare errore se è solo un problema di inizializzazione
@@ -78,46 +107,24 @@
   }
 
   function handleEditVisit(visita: Visita) {
-    editingVisit = visita;
-    showVisitModal = true;
+    const blockedReason = getVisitaMutationBlockedReason(visita);
+    if (blockedReason) {
+      toastStore.show('error', blockedReason);
+      return;
+    }
+
+    goto(`/ambulatori/${ambulatorio?.id}/visite/nuova?editVisitaId=${visita.id}`);
   }
 
   function openDeleteModal(visita: Visita) {
+    const blockedReason = getVisitaMutationBlockedReason(visita);
+    if (blockedReason) {
+      toastStore.show('error', blockedReason);
+      return;
+    }
+
     visitToDelete = visita;
     showDeleteModal = true;
-  }
-
-  async function handleVisitSubmit(event: CustomEvent) {
-    const { visita, fattoriRischioCV, followUpWriteOptions } = event.detail;
-
-    try {
-      if (visita.id) {
-        // Modifica visita esistente
-        await updateVisitaCompleta({
-          visita,
-          fattoriRischioCV: {
-            ...fattoriRischioCV,
-            visita_id: fattoriRischioCV.visita_id || visita.id
-          },
-          followUpWriteOptions
-        });
-        toastStore.show('success', 'Visita modificata con successo!');
-      } else {
-        // Crea nuova visita
-        await createVisitaCompleta({
-          visita,
-          fattoriRischioCV,
-          followUpWriteOptions
-        });
-        toastStore.show('success', 'Visita creata con successo!');
-      }
-
-      showVisitModal = false;
-      await loadVisite();
-    } catch (error) {
-      console.error('Errore salvataggio visita:', error);
-      toastStore.show('error', `Errore durante il salvataggio della visita: ${getErrorMessage(error)}`);
-    }
   }
 
   async function handleDeleteVisit() {
@@ -131,7 +138,7 @@
       visitToDelete = null;
     } catch (error) {
       console.error('Errore eliminazione visita:', error);
-      toastStore.show('error', "Errore durante l'eliminazione della visita");
+      toastStore.show('error', `Errore durante l'eliminazione della visita: ${getErrorMessage(error)}`);
     }
   }
 
@@ -153,29 +160,154 @@
     }).format(date);
   }
 
-  let mounted = false;
+  function toComparableDateKey(dateString: string): string {
+    const directDateMatch = dateString.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (directDateMatch) {
+      return `${directDateMatch[1]}-${directDateMatch[2]}-${directDateMatch[3]}`;
+    }
+
+    const parsed = new Date(dateString);
+    if (Number.isNaN(parsed.getTime())) {
+      return '';
+    }
+
+    const year = String(parsed.getFullYear());
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const day = String(parsed.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function compareStrings(left: string, right: string): number {
+    return left.localeCompare(right, 'it', { sensitivity: 'base', numeric: true });
+  }
+
+  function getSortValue(visita: Visita, key: SortKey): string | number {
+    if (key === 'data') {
+      const parsed = new Date(visita.data_visita).getTime();
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    if (key === 'paziente') {
+      return `${visita.paziente_cognome || ''} ${visita.paziente_nome || ''}`.trim();
+    }
+
+    if (key === 'tipo') {
+      return visita.tipo_visita || '';
+    }
+
+    return `${visita.medico_cognome || ''} ${visita.medico_nome || ''}`.trim();
+  }
+
+  function handleSort(nextKey: SortKey): void {
+    if (sortKey === nextKey) {
+      sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+      return;
+    }
+
+    sortKey = nextKey;
+    sortDirection = nextKey === 'data' ? 'desc' : 'asc';
+  }
+
+  function getSortIndicator(key: SortKey): string {
+    if (sortKey !== key) {
+      return '↕';
+    }
+    return sortDirection === 'asc' ? '↑' : '↓';
+  }
+
+  function resetColumnFilters(): void {
+    filterDataFrom = '';
+    filterDataTo = '';
+    filterPaziente = '';
+    filterTipo = '';
+    filterMotivo = '';
+    filterMedico = '';
+  }
 
   onMount(() => {
-    mounted = true;
-    // Aspetta un attimo per assicurarsi che il database sia inizializzato
-    setTimeout(() => {
-      loadVisite();
-    }, 100);
-
-    return () => {
-      mounted = false;
-    };
+    void loadVisite();
   });
 
-  // Ricerca in tempo reale
-  let searchTimeout: number;
   $: {
-    if (searchTimeout) clearTimeout(searchTimeout);
-    if (mounted) {
-      searchTimeout = setTimeout(() => {
-        if (ambulatorio) loadVisite();
-      }, 300) as unknown as number;
-    }
+    const normalizedPaziente = filterPaziente.trim().toLowerCase();
+    const normalizedMotivo = filterMotivo.trim().toLowerCase();
+    const normalizedMedico = filterMedico.trim().toLowerCase();
+
+    filteredVisite = visite.filter((visita) => {
+      const visitDateKey = toComparableDateKey(visita.data_visita);
+      const pazienteValue = `${visita.paziente_cognome || ''} ${visita.paziente_nome || ''}`
+        .trim()
+        .toLowerCase();
+      const motivoValue = (visita.motivo || '').toLowerCase();
+      const medicoValue = `${visita.medico_cognome || ''} ${visita.medico_nome || ''}`
+        .trim()
+        .toLowerCase();
+
+      const matchesDataFrom = !filterDataFrom || (visitDateKey !== '' && visitDateKey >= filterDataFrom);
+      const matchesDataTo = !filterDataTo || (visitDateKey !== '' && visitDateKey <= filterDataTo);
+      const matchesPaziente = !normalizedPaziente || pazienteValue.includes(normalizedPaziente);
+      const matchesTipo = !filterTipo || visita.tipo_visita === filterTipo;
+      const matchesMotivo = !normalizedMotivo || motivoValue.includes(normalizedMotivo);
+      const matchesMedico = !normalizedMedico || medicoValue.includes(normalizedMedico);
+
+      return (
+        matchesDataFrom &&
+        matchesDataTo &&
+        matchesPaziente &&
+        matchesTipo &&
+        matchesMotivo &&
+        matchesMedico
+      );
+    });
+  }
+
+  $: {
+    hasColumnFilters = Boolean(
+      filterDataFrom ||
+      filterDataTo ||
+      filterPaziente.trim() ||
+      filterTipo ||
+      filterMotivo.trim() ||
+      filterMedico.trim()
+    );
+  }
+
+  $: {
+    const uniqueTypes = Array.from(
+      new Set(
+        visite
+          .map((visita) => visita.tipo_visita?.trim())
+          .filter((value): value is string => Boolean(value))
+      )
+    ).sort((left, right) => compareStrings(left, right));
+
+    tipoFilterOptions = [
+      { value: '', label: 'Tutti' },
+      ...uniqueTypes.map((value) => ({ value, label: value }))
+    ];
+  }
+
+  $: {
+    const directionMultiplier = sortDirection === 'asc' ? 1 : -1;
+    sortedVisite = [...filteredVisite].sort((left, right) => {
+      const leftValue = getSortValue(left, sortKey);
+      const rightValue = getSortValue(right, sortKey);
+
+      let result = 0;
+      if (typeof leftValue === 'number' && typeof rightValue === 'number') {
+        result = leftValue - rightValue;
+      } else {
+        result = compareStrings(String(leftValue || ''), String(rightValue || ''));
+      }
+
+      if (result === 0) {
+        const leftDate = Number.isFinite(new Date(left.data_visita).getTime()) ? new Date(left.data_visita).getTime() : 0;
+        const rightDate = Number.isFinite(new Date(right.data_visita).getTime()) ? new Date(right.data_visita).getTime() : 0;
+        result = rightDate - leftDate;
+      }
+
+      return result * directionMultiplier;
+    });
   }
 </script>
 
@@ -197,113 +329,170 @@
   </PageHeader>
 
   <div class="page-content">
-    <Card>
-      <div class="toolbar">
-        <div class="search-box">
-          <Input
-            type="text"
-            placeholder="Cerca per paziente, motivo, diagnosi..."
-            bind:value={searchTerm}
-          />
-        </div>
-        <div class="toolbar-info">
-          {visite.length} {visite.length === 1 ? 'visita' : 'visite'}
-        </div>
-      </div>
-
-      {#if loading}
+    {#if loading}
+      <Card padding="sm">
         <div class="loading-state">Caricamento visite...</div>
-      {:else if visite.length === 0}
+      </Card>
+    {:else if visite.length === 0}
+      <Card padding="sm">
         <div class="empty-state">
           <div class="empty-icon">
             <Icon name="file-text" size={48} />
           </div>
-          <h3 class="empty-title">
-            {searchTerm ? 'Nessuna visita trovata' : 'Nessuna visita registrata'}
-          </h3>
-          <p class="empty-text">
-            {searchTerm
-              ? 'Prova a modificare i criteri di ricerca'
-              : 'Inizia registrando la prima visita medica'}
-          </p>
+          <h3 class="empty-title">Nessuna visita registrata</h3>
+          <p class="empty-text">Inizia registrando la prima visita medica</p>
         </div>
-      {:else}
+      </Card>
+    {:else}
+      <div class="filters-sticky">
+        <Card padding="sm">
+          <div class="filters-panel">
+            <div class="filters-grid">
+              <Input
+                type="date"
+                label="Data dal"
+                bind:value={filterDataFrom}
+              />
+              <Input
+                type="date"
+                label="Data al"
+                bind:value={filterDataTo}
+              />
+              <Input
+                type="text"
+                label="Paziente"
+                placeholder="Cognome o nome"
+                bind:value={filterPaziente}
+              />
+              <Select
+                id="filtro-tipo-visita"
+                label="Tipo"
+                placeholder=""
+                options={tipoFilterOptions}
+                bind:value={filterTipo}
+              />
+              <Input
+                type="text"
+                label="Motivo"
+                placeholder="Filtra motivo"
+                bind:value={filterMotivo}
+              />
+              <Input
+                type="text"
+                label="Medico"
+                placeholder="Cognome o nome"
+                bind:value={filterMedico}
+              />
+            </div>
+            <div class="filters-actions">
+              <span class="filters-count">
+                {sortedVisite.length} {sortedVisite.length === 1 ? 'visita' : 'visite'}
+              </span>
+              <button
+                type="button"
+                class="btn-filter-reset"
+                on:click={resetColumnFilters}
+                disabled={!hasColumnFilters}
+              >
+                Azzera filtri
+              </button>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      <Card padding="sm">
         <div class="table-container">
           <table class="table">
             <thead>
               <tr>
-                <th>Data</th>
-                <th>Paziente</th>
-                <th>Tipo</th>
+                <th>
+                  <button type="button" class="sort-btn" on:click={() => handleSort('data')}>
+                    <span>Data</span>
+                    <span class="sort-arrow">{getSortIndicator('data')}</span>
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" on:click={() => handleSort('paziente')}>
+                    <span>Paziente</span>
+                    <span class="sort-arrow">{getSortIndicator('paziente')}</span>
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" on:click={() => handleSort('tipo')}>
+                    <span>Tipo</span>
+                    <span class="sort-arrow">{getSortIndicator('tipo')}</span>
+                  </button>
+                </th>
                 <th>Motivo</th>
-                <th>Diagnosi</th>
-                <th>Medico</th>
+                <th>
+                  <button type="button" class="sort-btn" on:click={() => handleSort('medico')}>
+                    <span>Medico</span>
+                    <span class="sort-arrow">{getSortIndicator('medico')}</span>
+                  </button>
+                </th>
                 <th>Azioni</th>
               </tr>
             </thead>
             <tbody>
-              {#each visite as visita (visita.id)}
+              {#if sortedVisite.length === 0}
                 <tr>
-                  <td>
-                    <div class="date-main">{formatDate(visita.data_visita)}</div>
-                  </td>
-                  <td>
-                    <div class="patient-cell">
-                      <strong>{visita.paziente_cognome} {visita.paziente_nome}</strong>
-                      <div class="patient-cf">{visita.paziente_codice_fiscale}</div>
-                    </div>
-                  </td>
-                  <td>
-                    <span class="badge badge-{visita.tipo_visita.toLowerCase().replace(' ', '-')}">
-                      {visita.tipo_visita}
-                    </span>
-                  </td>
-                  <td>{visita.motivo}</td>
-                  <td>
-                    {#if visita.diagnosi}
-                      <span class="truncate">{visita.diagnosi}</span>
-                    {:else}
-                      <span class="text-muted">-</span>
-                    {/if}
-                  </td>
-                  <td>{visita.medico_cognome} {visita.medico_nome}</td>
-                  <td>
-                    <div class="actions">
-                      <button
-                        class="btn-icon"
-                        on:click={() => handleEditVisit(visita)}
-                        title="Modifica"
-                      >
-                        <Icon name="pencil" size={16} />
-                      </button>
-                      <button
-                        class="btn-icon"
-                        on:click={() => openDeleteModal(visita)}
-                        title="Elimina"
-                      >
-                        <Icon name="trash" size={16} />
-                      </button>
-                    </div>
+                  <td class="empty-filtered-cell" colspan="6">
+                    Nessuna visita trovata con i filtri selezionati
                   </td>
                 </tr>
-              {/each}
+              {:else}
+                {#each sortedVisite as visita (visita.id)}
+                  <tr>
+                    <td>
+                      <div class="date-main">{formatDate(visita.data_visita)}</div>
+                      {#if !isCurrentVersion(visita)}
+                        <div class="version-badge">Versione precedente</div>
+                      {/if}
+                    </td>
+                    <td>
+                      <div class="patient-cell">
+                        <strong>{visita.paziente_cognome} {visita.paziente_nome}</strong>
+                        <div class="patient-cf">{visita.paziente_codice_fiscale}</div>
+                      </div>
+                    </td>
+                    <td>
+                      <span class="badge badge-{visita.tipo_visita.toLowerCase().replace(' ', '-')}">
+                        {visita.tipo_visita}
+                      </span>
+                    </td>
+                    <td>{visita.motivo}</td>
+                    <td>{visita.medico_cognome} {visita.medico_nome}</td>
+                    <td>
+                      <div class="actions">
+                        <button
+                          class="btn-icon"
+                          on:click={() => handleEditVisit(visita)}
+                          title={canMutateVisita(visita) ? 'Modifica' : (getVisitaMutationBlockedReason(visita) || '')}
+                          disabled={!canMutateVisita(visita)}
+                        >
+                          <Icon name="pencil" size={16} />
+                        </button>
+                        <button
+                          class="btn-icon"
+                          on:click={() => openDeleteModal(visita)}
+                          title={canMutateVisita(visita) ? 'Elimina' : (getVisitaMutationBlockedReason(visita) || '')}
+                          disabled={!canMutateVisita(visita)}
+                        >
+                          <Icon name="trash" size={16} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                {/each}
+              {/if}
             </tbody>
           </table>
         </div>
-      {/if}
-    </Card>
+      </Card>
+    {/if}
   </div>
 </div>
-
-<!-- Modal Nuova/Modifica Visita -->
-<VisitFormModal
-  visita={editingVisit}
-  isOpen={showVisitModal}
-  ambulatorioId={ambulatorio?.id || 0}
-  medicoId={user?.id || 0}
-  on:submit={handleVisitSubmit}
-  on:close={() => (showVisitModal = false)}
-/>
 
 <!-- Modal Conferma Eliminazione -->
 <Modal bind:open={showDeleteModal} title="Conferma Eliminazione" size="sm">
@@ -326,6 +515,18 @@
     padding: var(--space-6);
     max-width: 1400px;
     margin: 0 auto;
+  }
+
+  .page-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .filters-sticky {
+    position: sticky;
+    top: var(--space-3);
+    z-index: 20;
   }
 
   .page-header {
@@ -378,24 +579,6 @@
     font-size: var(--text-lg);
   }
 
-  .toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: var(--space-4);
-    margin-bottom: var(--space-6);
-  }
-
-  .search-box {
-    flex: 1;
-    max-width: 400px;
-  }
-
-  .toolbar-info {
-    color: var(--color-text-secondary);
-    font-size: var(--text-sm);
-  }
-
   .loading-state {
     text-align: center;
     padding: var(--space-12);
@@ -438,6 +621,52 @@
     overflow-x: auto;
   }
 
+  .filters-panel {
+    padding: var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-secondary);
+  }
+
+  .filters-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
+
+  .filters-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: var(--space-2);
+  }
+
+  .filters-count {
+    color: var(--color-text-secondary);
+    font-size: var(--text-sm);
+  }
+
+  .btn-filter-reset {
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .btn-filter-reset:hover:not(:disabled) {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+  }
+
+  .btn-filter-reset:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
   .table {
     width: 100%;
     border-collapse: collapse;
@@ -461,13 +690,39 @@
     text-align: center;
   }
 
+  .sort-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  .sort-arrow {
+    font-size: 11px;
+    line-height: 1;
+    color: var(--color-text-tertiary);
+  }
+
   .table td {
-    padding: var(--space-4);
+    padding: var(--space-2) var(--space-4);
     border-bottom: 1px solid var(--color-border);
   }
 
   .table td:last-child {
     text-align: center;
+  }
+
+  .empty-filtered-cell {
+    text-align: center;
+    color: var(--color-text-secondary);
+    padding: var(--space-6) var(--space-4);
   }
 
   .table tbody tr {
@@ -481,6 +736,17 @@
   .date-main {
     font-weight: 500;
     color: var(--color-text-primary);
+  }
+
+  .version-badge {
+    display: inline-block;
+    margin-top: var(--space-1);
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--color-warning) 18%, var(--color-bg-primary));
+    color: var(--color-warning-dark, #92400e);
+    font-size: var(--text-xs);
+    font-weight: 600;
   }
 
   .patient-cell {
@@ -555,19 +821,30 @@
     transform: scale(1.1);
   }
 
+  .btn-icon:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .btn-icon:disabled:hover {
+    background: none;
+  }
+
+  @media (max-width: 1100px) {
+    .filters-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
   @media (max-width: 768px) {
     .page-header {
       flex-direction: column;
       gap: var(--space-4);
     }
 
-    .toolbar {
-      flex-direction: column;
-      align-items: stretch;
-    }
-
-    .search-box {
-      max-width: none;
+    .filters-grid {
+      grid-template-columns: 1fr;
     }
   }
 </style>

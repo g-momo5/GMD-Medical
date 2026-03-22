@@ -1,6 +1,11 @@
 // GMD Medical Platform - Visite Database Functions
 import { insertReturningId } from './client';
 import { initDatabase } from './schema';
+import {
+  getVisitaEditDeleteLockedMessage,
+  getVisitaPreviousVersionLockedMessage,
+  isVisitaWithinEditDeleteWindow
+} from '../utils/visite-permissions';
 import type {
   CreateVisitaInput,
   EsameEmaticoKey,
@@ -171,6 +176,39 @@ function pushField(fields: string[], values: unknown[], column: string, value: u
   fields.push(`${column} = ?`);
 }
 
+type VisitaMutationState = {
+  data_visita: string;
+  is_current_version: number | null;
+};
+
+async function getVisitaMutationState(id: number): Promise<VisitaMutationState | null> {
+  const db = await initDatabase();
+  const rows = await db.select<VisitaMutationState[]>(
+    'SELECT data_visita, is_current_version FROM visite WHERE id = ? LIMIT 1',
+    [normalizeIntegerForWrite(id)]
+  );
+  return rows[0] ?? null;
+}
+
+async function assertVisitaEditableOrDeletable(id: number): Promise<void> {
+  const visitaState = await getVisitaMutationState(id);
+  if (!visitaState) {
+    throw new Error('Visita non trovata.');
+  }
+
+  if (visitaState.is_current_version === 0) {
+    throw new Error(getVisitaPreviousVersionLockedMessage());
+  }
+
+  if (!isVisitaWithinEditDeleteWindow(visitaState.data_visita)) {
+    throw new Error(getVisitaEditDeleteLockedMessage());
+  }
+}
+
+function getCurrentOnlyWhereClause(currentOnly?: boolean): string {
+  return currentOnly ? ' AND COALESCE(v.is_current_version, 1) = 1' : '';
+}
+
 export async function getAllVisite(): Promise<Visita[]> {
   const db = await initDatabase();
   return db.select<Visita[]>(`
@@ -188,7 +226,10 @@ export async function getAllVisite(): Promise<Visita[]> {
   `);
 }
 
-export async function getVisiteByAmbulatorio(ambulatorioId: number): Promise<Visita[]> {
+export async function getVisiteByAmbulatorio(
+  ambulatorioId: number,
+  options?: { currentOnly?: boolean }
+): Promise<Visita[]> {
   const db = await initDatabase();
   return db.select<Visita[]>(
     `SELECT
@@ -202,12 +243,20 @@ export async function getVisiteByAmbulatorio(ambulatorioId: number): Promise<Vis
     INNER JOIN pazienti p ON v.paziente_id = p.id
     INNER JOIN users u ON v.medico_id = u.id
     WHERE v.ambulatorio_id = ?
+    ${getCurrentOnlyWhereClause(options?.currentOnly)}
     ORDER BY v.data_visita DESC, v.created_at DESC`,
     [normalizeIntegerForWrite(ambulatorioId)]
   );
 }
 
-export async function getVisiteByPaziente(pazienteId: number): Promise<Visita[]> {
+export async function getCurrentVisiteByAmbulatorio(ambulatorioId: number): Promise<Visita[]> {
+  return getVisiteByAmbulatorio(ambulatorioId, { currentOnly: true });
+}
+
+export async function getVisiteByPaziente(
+  pazienteId: number,
+  options?: { currentOnly?: boolean }
+): Promise<Visita[]> {
   const db = await initDatabase();
   return db.select<Visita[]>(
     `SELECT
@@ -221,12 +270,21 @@ export async function getVisiteByPaziente(pazienteId: number): Promise<Visita[]>
     INNER JOIN pazienti p ON v.paziente_id = p.id
     INNER JOIN users u ON v.medico_id = u.id
     WHERE v.paziente_id = ?
+    ${getCurrentOnlyWhereClause(options?.currentOnly)}
     ORDER BY v.data_visita DESC, v.created_at DESC`,
     [normalizeIntegerForWrite(pazienteId)]
   );
 }
 
-export async function searchVisite(query: string, ambulatorioId?: number): Promise<Visita[]> {
+export async function getCurrentVisiteByPaziente(pazienteId: number): Promise<Visita[]> {
+  return getVisiteByPaziente(pazienteId, { currentOnly: true });
+}
+
+export async function searchVisite(
+  query: string,
+  ambulatorioId?: number,
+  options?: { currentOnly?: boolean }
+): Promise<Visita[]> {
   const db = await initDatabase();
   const searchTerm = `%${query}%`;
 
@@ -255,6 +313,9 @@ export async function searchVisite(query: string, ambulatorioId?: number): Promi
   if (ambulatorioId !== undefined) {
     params.push(normalizeIntegerForWrite(ambulatorioId));
     sql += ' AND v.ambulatorio_id = ?';
+  }
+  if (options?.currentOnly) {
+    sql += ' AND COALESCE(v.is_current_version, 1) = 1';
   }
 
   sql += ' ORDER BY v.data_visita DESC, v.created_at DESC';
@@ -292,6 +353,7 @@ export async function getPreviousEsamiEmaticiByPaziente(params: {
     SELECT id, data_visita, esami_ematici
     FROM visite
     WHERE paziente_id = ?
+      AND COALESCE(is_current_version, 1) = 1
       AND esami_ematici IS NOT NULL
       AND TRIM(esami_ematici) <> ''
   `;
@@ -389,15 +451,17 @@ export async function createVisita(input: CreateVisitaInput): Promise<number> {
 
   return insertReturningId(
     `INSERT INTO visite (
-      ambulatorio_id, paziente_id, medico_id, data_visita, tipo_visita,
+      ambulatorio_id, paziente_id, medico_id, previous_version_id, is_current_version, data_visita, tipo_visita,
       motivo, altezza, peso, bmi, bsa, anamnesi_cardiologica, anamnesi_internistica, terapia_domiciliare, valutazione_odierna, esami_ematici, ecocardiografia, fh_assessment, terapia_ipolipemizzante, valutazione_rischio_cv, firme_visita, pianificazione_followup, conclusioni, anamnesi, esame_obiettivo, diagnosi, terapia, note
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )`,
     [
       normalizeIntegerForWrite(input.ambulatorio_id),
       normalizeIntegerForWrite(input.paziente_id),
       normalizeIntegerForWrite(input.medico_id),
+      normalizeIntegerForWrite(input.previous_version_id),
+      normalizeIntegerForWrite(input.is_current_version ?? 1),
       input.data_visita,
       normalizeRequiredTextForWrite(input.tipo_visita),
       normalizeRequiredTextForWrite(input.motivo),
@@ -431,6 +495,14 @@ export async function updateVisita(input: UpdateVisitaInput): Promise<void> {
   const fields: string[] = [];
   const values: unknown[] = [];
 
+  await assertVisitaEditableOrDeletable(input.id);
+
+  if (input.previous_version_id !== undefined) {
+    pushField(fields, values, 'previous_version_id', normalizeIntegerForWrite(input.previous_version_id));
+  }
+  if (input.is_current_version !== undefined) {
+    pushField(fields, values, 'is_current_version', normalizeIntegerForWrite(input.is_current_version));
+  }
   if (input.paziente_id !== undefined) {
     pushField(fields, values, 'paziente_id', normalizeIntegerForWrite(input.paziente_id));
   }
@@ -524,6 +596,7 @@ export async function updateVisita(input: UpdateVisitaInput): Promise<void> {
 }
 
 export async function deleteVisita(id: number): Promise<void> {
+  await assertVisitaEditableOrDeletable(id);
   const db = await initDatabase();
   await db.execute('DELETE FROM visite WHERE id = ?', [normalizeIntegerForWrite(id)]);
 }

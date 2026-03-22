@@ -7,9 +7,13 @@
   import { toastStore } from '$lib/stores/toast';
   import { getAllPazienti } from '$lib/db/pazienti';
   import { getFattoriRischioCVByVisitaId } from '$lib/db/fattori-rischio-cv';
-  import { previewAppuntamentoWrite } from '$lib/db/appuntamenti';
-  import { getPreviousEsamiEmaticiByPaziente, getVisiteByPaziente } from '$lib/db/visite';
-  import { createVisitaCompleta } from '$lib/db/visite-complete';
+  import { getAppuntamentoBySourceVisitaId, previewAppuntamentoWrite } from '$lib/db/appuntamenti';
+  import {
+    getCurrentVisiteByPaziente,
+    getPreviousEsamiEmaticiByPaziente,
+    getVisitaById
+  } from '$lib/db/visite';
+  import { createVisitaCompleta, createVisitaVersioneCompleta } from '$lib/db/visite-complete';
   import type {
     AppuntamentoWriteOptions,
     AppuntamentoWriteRequirements,
@@ -44,10 +48,13 @@
     createEmptyValutazioneRischioCV,
     isValutazioneRischioCVEqual,
     normalizeFHAssessment,
+    parseEsamiEmatici,
     normalizeTerapiaIpolipemizzante,
     normalizeValutazioneRischioCV,
     parseFHAssessment,
     parseFirmeVisita,
+    parsePianificazioneFollowUp,
+    normalizePianificazioneFollowUp,
     parseTerapiaIpolipemizzante,
     parseValutazioneRischioCV,
     serializeEsamiEmatici,
@@ -59,11 +66,23 @@
     validateFHAssessment,
     validateTerapiaIpolipemizzante
   } from '$lib/utils/visit-clinical';
+  import {
+    getVisitaEditDeleteLockedMessage,
+    getVisitaPreviousVersionLockedMessage,
+    isVisitaWithinEditDeleteWindow
+  } from '$lib/utils/visite-permissions';
+
+  let editingVisitaId = 0;
+  let isEditMode = false;
+  let initialEditFollowUpSchedule: { dataOraProssimaVisita: string; motivoProssimaVisita: string } | null = null;
+  let sourceFollowUpAppointmentId: number | undefined;
 
   $: user = $authStore.user;
   $: ambulatorioId = parseInt($page.params.id || '0');
   $: cameFromDashboard = $page.url.searchParams.get('from') === 'dashboard';
   $: preselectedPazienteId = parseInt($page.url.searchParams.get('pazienteId') || '0');
+  $: editingVisitaId = parseInt($page.url.searchParams.get('editVisitaId') || '0');
+  $: isEditMode = editingVisitaId > 0;
 
   type VisitFlowStep = 'select_patient' | 'compile_visit';
   type SelectPazienteOptions = {
@@ -102,7 +121,40 @@
     vci: string;
     referto: string;
   };
+  const FIRST_VISIT_TYPE = 'Prima visita';
   const EXISTING_PATIENT_DEFAULT_VISIT_TYPE = 'Controllo';
+
+  function getComparableFollowUpSchedule(
+    value?: Partial<{ dataOraProssimaVisita: string; motivoProssimaVisita: string }> | null
+  ): { dataOraProssimaVisita: string; motivoProssimaVisita: string } | null {
+    const normalized = normalizePianificazioneFollowUp(value);
+    if (!normalized.dataOraProssimaVisita) {
+      return null;
+    }
+
+    return {
+      dataOraProssimaVisita: normalized.dataOraProssimaVisita,
+      motivoProssimaVisita: normalized.motivoProssimaVisita
+    };
+  }
+
+  function isSameFollowUpSchedule(
+    left: { dataOraProssimaVisita: string; motivoProssimaVisita: string } | null,
+    right: { dataOraProssimaVisita: string; motivoProssimaVisita: string } | null
+  ): boolean {
+    if (left === null && right === null) {
+      return true;
+    }
+
+    if (!left || !right) {
+      return false;
+    }
+
+    return (
+      left.dataOraProssimaVisita === right.dataOraProssimaVisita &&
+      left.motivoProssimaVisita === right.motivoProssimaVisita
+    );
+  }
 
   function getTodayVisitDate(): string {
     return new Date().toISOString().split('T')[0];
@@ -191,8 +243,8 @@
 
   // Opzioni per il campo Tipo Visita
   const tipoVisitaOptions = [
-    { value: 'Prima visita', label: 'Prima visita' },
-    { value: 'Controllo', label: 'Controllo' }
+    { value: FIRST_VISIT_TYPE, label: FIRST_VISIT_TYPE },
+    { value: EXISTING_PATIENT_DEFAULT_VISIT_TYPE, label: EXISTING_PATIENT_DEFAULT_VISIT_TYPE }
   ];
 
   // Form data
@@ -249,8 +301,11 @@
 
   $: etaPaziente = selectedPaziente ? calculateAge(selectedPaziente.data_nascita) : null;
   $: sessoPaziente = selectedPaziente?.sesso || null;
-  $: if (currentStep === 'compile_visit' && !selectedPaziente) {
+  $: if (!isEditMode && currentStep === 'compile_visit' && !selectedPaziente) {
     currentStep = 'select_patient';
+  }
+  $: if (isEditMode && currentStep !== 'compile_visit') {
+    currentStep = 'compile_visit';
   }
   $: {
     const parsedPeso = formData.peso ? parseFloat(formData.peso) : NaN;
@@ -362,6 +417,8 @@
     conclusioni = '';
     pianificazioneFollowUp = createEmptyPianificazioneFollowUp();
     firmeVisita = createEmptyFirmeVisita();
+    initialEditFollowUpSchedule = null;
+    sourceFollowUpAppointmentId = undefined;
   }
 
   function applyLatestVisitaData(latestVisita: Visita): void {
@@ -402,14 +459,121 @@
     firmeVisita = parseFirmeVisita(latestVisita.firme_visita);
   }
 
+  function applyVisitaDataForEdit(visita: Visita): void {
+    esamiEmatici = parseEsamiEmatici(visita.esami_ematici);
+    formData = {
+      data_visita: (visita.data_visita || '').slice(0, 10) || getTodayVisitDate(),
+      tipo_visita: visita.tipo_visita || '',
+      motivo: visita.motivo || '',
+      altezza: visita.altezza != null ? String(visita.altezza) : '',
+      peso: visita.peso != null ? String(visita.peso) : '',
+      bmi: visita.bmi != null ? String(visita.bmi) : '',
+      bsa: visita.bsa != null ? String(visita.bsa) : '',
+      anamnesi: visita.anamnesi || '',
+      esame_obiettivo: visita.esame_obiettivo || '',
+      diagnosi: visita.diagnosi || '',
+      terapia: visita.terapia || '',
+      note: visita.note || ''
+    };
+
+    anamnesiCardiologica = visita.anamnesi_cardiologica || '';
+    terapiaIpolipemizzante = parseTerapiaIpolipemizzante(visita.terapia_ipolipemizzante);
+    terapiaDomiciliare = visita.terapia_domiciliare || '';
+    valutazioneOdierna = visita.valutazione_odierna || '';
+    valutazioneRischioCV = parseValutazioneRischioCV(visita.valutazione_rischio_cv, esamiEmatici);
+    ecocardiografia = parseEcocardiografia(visita.ecocardiografia);
+    fhAssessment = parseFHAssessment(visita.fh_assessment);
+    firmeVisita = parseFirmeVisita(visita.firme_visita);
+    conclusioni = visita.conclusioni || '';
+    pianificazioneFollowUp = parsePianificazioneFollowUp(visita.pianificazione_followup);
+  }
+
+  async function loadEditVisitaData(): Promise<void> {
+    if (!isEditMode || !editingVisitaId) {
+      return;
+    }
+
+    try {
+      const visita = await getVisitaById(editingVisitaId);
+      if (!visita || visita.ambulatorio_id !== ambulatorioId) {
+        toastStore.show('error', 'Visita da modificare non trovata');
+        goto(`/ambulatori/${ambulatorioId}/visite`);
+        return;
+      }
+
+      if (visita.is_current_version === 0) {
+        toastStore.show('error', getVisitaPreviousVersionLockedMessage());
+        goto(`/ambulatori/${ambulatorioId}/visite`);
+        return;
+      }
+
+      if (!isVisitaWithinEditDeleteWindow(visita.data_visita)) {
+        toastStore.show('error', getVisitaEditDeleteLockedMessage());
+        goto(`/ambulatori/${ambulatorioId}/visite`);
+        return;
+      }
+
+      const paziente = pazienti.find((item) => item.id === visita.paziente_id);
+      if (!paziente) {
+        toastStore.show('error', 'Paziente associato alla visita non trovato');
+        goto(`/ambulatori/${ambulatorioId}/visite`);
+        return;
+      }
+
+      selectedPaziente = paziente;
+      latestVisitaPrefillRequestKey = `${paziente.id}:edit:${Date.now()}`;
+      applyVisitaDataForEdit(visita);
+      initialEditFollowUpSchedule = getComparableFollowUpSchedule(
+        parsePianificazioneFollowUp(visita.pianificazione_followup)
+      );
+
+      try {
+        const sourceFollowUpAppointment = await getAppuntamentoBySourceVisitaId(visita.id);
+        sourceFollowUpAppointmentId = sourceFollowUpAppointment?.id;
+      } catch (sourceFollowUpError) {
+        console.error('Errore caricamento appuntamento follow-up della visita in modifica:', sourceFollowUpError);
+        sourceFollowUpAppointmentId = undefined;
+      }
+
+      try {
+        const fattori = await getFattoriRischioCVByVisitaId(visita.id);
+        if (!fattori) {
+          fattoriRischio = createEmptyFattoriRischio();
+          return;
+        }
+
+        fattoriRischio = {
+          familiarita: fattori.familiarita,
+          familiarita_note: fattori.familiarita_note || '',
+          ipertensione: fattori.ipertensione,
+          diabete: fattori.diabete,
+          diabete_durata: fattori.diabete_durata || '',
+          diabete_tipo: fattori.diabete_tipo || '',
+          dislipidemia: fattori.dislipidemia,
+          obesita: fattori.obesita,
+          fumo: fattori.fumo || '',
+          fumo_ex_eta: fattori.fumo_ex_eta || ''
+        };
+      } catch (fattoriError) {
+        console.error('Errore caricamento fattori rischio in modifica:', fattoriError);
+        fattoriRischio = createEmptyFattoriRischio();
+      }
+    } catch (error) {
+      console.error('Errore caricamento visita in modifica:', error);
+      toastStore.show('error', `Errore caricamento visita: ${getErrorMessage(error)}`);
+      goto(`/ambulatori/${ambulatorioId}/visite`);
+    }
+  }
+
   async function prefillFromLatestVisita(paziente: Paziente): Promise<void> {
     const requestKey = `${paziente.id}:${Date.now()}`;
     latestVisitaPrefillRequestKey = requestKey;
 
-    resetVisitState(EXISTING_PATIENT_DEFAULT_VISIT_TYPE);
+    // Se non esiste uno storico visita, il tipo deve restare "Prima visita".
+    resetVisitState(FIRST_VISIT_TYPE);
 
     try {
-      const visite = await getVisiteByPaziente(paziente.id);
+      const visite = await getCurrentVisiteByPaziente(paziente.id);
       if (latestVisitaPrefillRequestKey !== requestKey || selectedPaziente?.id !== paziente.id) {
         return;
       }
@@ -486,6 +650,10 @@
 
   async function initializePage() {
     await loadPazienti();
+    if (isEditMode) {
+      await loadEditVisitaData();
+      return;
+    }
     applyPreselectedPaziente();
   }
 
@@ -526,7 +694,7 @@
     }
 
     latestVisitaPrefillRequestKey = `${paziente.id}:skip:${Date.now()}`;
-    resetVisitState('');
+    resetVisitState(FIRST_VISIT_TYPE);
   }
 
   function handleSelectPazienteForVisit(paziente: Paziente): void {
@@ -543,6 +711,10 @@
   }
 
   function handleChangePaziente(): void {
+    if (isEditMode) {
+      return;
+    }
+
     if (!selectedPaziente) {
       currentStep = 'select_patient';
       return;
@@ -643,7 +815,8 @@
   }
 
   async function resolveFollowUpWriteOptions(
-    followUpDateTime: string
+    followUpDateTime: string,
+    appointmentIdForUpdate?: number
   ): Promise<AppuntamentoWriteOptions | null> {
     let options: AppuntamentoWriteOptions = {};
 
@@ -651,6 +824,7 @@
       const preview = await previewAppuntamentoWrite({
         ambulatorioId,
         dataOraInizio: followUpDateTime,
+        appointmentIdForUpdate,
         options
       });
 
@@ -761,9 +935,17 @@
 
     const followUpDateTime = (pianificazioneFollowUp.dataOraProssimaVisita || '').trim();
     let followUpWriteOptions: AppuntamentoWriteOptions | undefined;
+    const currentFollowUpSchedule = getComparableFollowUpSchedule(pianificazioneFollowUp);
+    const skipFollowUpValidation =
+      isEditMode && isSameFollowUpSchedule(currentFollowUpSchedule, initialEditFollowUpSchedule);
     if (followUpDateTime) {
       try {
-        const resolvedOptions = await resolveFollowUpWriteOptions(followUpDateTime);
+        const resolvedOptions = skipFollowUpValidation
+          ? {}
+          : await resolveFollowUpWriteOptions(
+              followUpDateTime,
+              isEditMode ? sourceFollowUpAppointmentId : undefined
+            );
         if (resolvedOptions === null) {
           toastStore.show('info', 'Programmazione prossima visita annullata');
           return;
@@ -796,49 +978,75 @@
       terapiaIpolipemizzante = normalizeTerapiaIpolipemizzante(terapiaIpolipemizzante);
       valutazioneRischioCV = normalizeValutazioneRischioCV(valutazioneRischioCV, esamiEmatici);
 
-      const visitaId = await createVisitaCompleta({
-        visita: {
-          ambulatorio_id: ambulatorioId,
-          paziente_id: selectedPaziente.id,
-          medico_id: user.id,
-          data_visita: formData.data_visita || getTodayVisitDate(),
-          tipo_visita: formData.tipo_visita,
-          motivo: formData.motivo,
-          altezza: formData.altezza ? parseFloat(formData.altezza) : undefined,
-          peso: formData.peso ? parseFloat(formData.peso) : undefined,
-          bmi: formData.bmi ? parseFloat(formData.bmi) : undefined,
-          bsa: formData.bsa ? parseFloat(formData.bsa) : undefined,
-          anamnesi_cardiologica: anamnesiCardiologica || undefined,
-          terapia_ipolipemizzante: serializeTerapiaIpolipemizzante(terapiaIpolipemizzante),
-          terapia_domiciliare: terapiaDomiciliare || undefined,
-          valutazione_odierna: valutazioneOdierna || undefined,
-          esami_ematici: esamiEmaticiPayload,
-          valutazione_rischio_cv: serializeValutazioneRischioCV(valutazioneRischioCV, esamiEmatici),
-          ecocardiografia: ecocardiografiaPayload,
-          fh_assessment: serializeFHAssessment(fhAssessment),
-          firme_visita: serializeFirmeVisita(firmeVisita),
-          pianificazione_followup: serializePianificazioneFollowUp(pianificazioneFollowUp),
-          conclusioni: conclusioni || undefined,
-          anamnesi: formData.anamnesi || undefined,
-          esame_obiettivo: formData.esame_obiettivo || undefined,
-          diagnosi: formData.diagnosi || undefined,
-          terapia: formData.terapia || undefined,
-          note: formData.note || undefined
-        },
-        fattoriRischioCV: {
-          familiarita: fattoriRischio.familiarita,
-          familiarita_note: fattoriRischio.familiarita_note,
-          ipertensione: fattoriRischio.ipertensione,
-          diabete: fattoriRischio.diabete,
-          diabete_durata: fattoriRischio.diabete_durata,
-          diabete_tipo: fattoriRischio.diabete_tipo,
-          dislipidemia: fattoriRischio.dislipidemia,
-          obesita: fattoriRischio.obesita,
-          fumo: fattoriRischio.fumo,
-          fumo_ex_eta: fattoriRischio.fumo_ex_eta
-        },
-        followUpWriteOptions
-      });
+      const visitaPayload = {
+        ambulatorio_id: ambulatorioId,
+        paziente_id: selectedPaziente.id,
+        medico_id: user.id,
+        data_visita: formData.data_visita || getTodayVisitDate(),
+        tipo_visita: formData.tipo_visita,
+        motivo: formData.motivo,
+        altezza: formData.altezza ? parseFloat(formData.altezza) : undefined,
+        peso: formData.peso ? parseFloat(formData.peso) : undefined,
+        bmi: formData.bmi ? parseFloat(formData.bmi) : undefined,
+        bsa: formData.bsa ? parseFloat(formData.bsa) : undefined,
+        anamnesi_cardiologica: anamnesiCardiologica || undefined,
+        terapia_ipolipemizzante: serializeTerapiaIpolipemizzante(terapiaIpolipemizzante),
+        terapia_domiciliare: terapiaDomiciliare || undefined,
+        valutazione_odierna: valutazioneOdierna || undefined,
+        esami_ematici: esamiEmaticiPayload,
+        valutazione_rischio_cv: serializeValutazioneRischioCV(valutazioneRischioCV, esamiEmatici),
+        ecocardiografia: ecocardiografiaPayload,
+        fh_assessment: serializeFHAssessment(fhAssessment),
+        firme_visita: serializeFirmeVisita(firmeVisita),
+        pianificazione_followup: serializePianificazioneFollowUp(pianificazioneFollowUp),
+        conclusioni: conclusioni || undefined,
+        anamnesi: formData.anamnesi || undefined,
+        esame_obiettivo: formData.esame_obiettivo || undefined,
+        diagnosi: formData.diagnosi || undefined,
+        terapia: formData.terapia || undefined,
+        note: formData.note || undefined
+      };
+
+      const visitaId = isEditMode
+        ? await createVisitaVersioneCompleta({
+            sourceVisitaId: editingVisitaId,
+            visita: visitaPayload,
+            fattoriRischioCV: {
+              familiarita: fattoriRischio.familiarita,
+              familiarita_note: fattoriRischio.familiarita_note,
+              ipertensione: fattoriRischio.ipertensione,
+              diabete: fattoriRischio.diabete,
+              diabete_durata: fattoriRischio.diabete_durata,
+              diabete_tipo: fattoriRischio.diabete_tipo,
+              dislipidemia: fattoriRischio.dislipidemia,
+              obesita: fattoriRischio.obesita,
+              fumo: fattoriRischio.fumo,
+              fumo_ex_eta: fattoriRischio.fumo_ex_eta
+            },
+            followUpWriteOptions
+          })
+        : await createVisitaCompleta({
+            visita: visitaPayload,
+            fattoriRischioCV: {
+              familiarita: fattoriRischio.familiarita,
+              familiarita_note: fattoriRischio.familiarita_note,
+              ipertensione: fattoriRischio.ipertensione,
+              diabete: fattoriRischio.diabete,
+              diabete_durata: fattoriRischio.diabete_durata,
+              diabete_tipo: fattoriRischio.diabete_tipo,
+              dislipidemia: fattoriRischio.dislipidemia,
+              obesita: fattoriRischio.obesita,
+              fumo: fattoriRischio.fumo,
+              fumo_ex_eta: fattoriRischio.fumo_ex_eta
+            },
+            followUpWriteOptions
+          });
+
+      if (isEditMode) {
+        toastStore.show('success', 'Visita modificata: creata nuova versione.');
+        goto(`/ambulatori/${ambulatorioId}/visite`);
+        return;
+      }
 
       if (generateReport) {
         try {
@@ -902,24 +1110,49 @@
 
       goto(`/ambulatori/${ambulatorioId}/visite`);
     } catch (error) {
-      console.error('Errore creazione visita:', error);
-      toastStore.show('error', `Errore durante la creazione della visita: ${getErrorMessage(error)}`);
+      console.error(isEditMode ? 'Errore modifica visita:' : 'Errore creazione visita:', error);
+      toastStore.show(
+        'error',
+        isEditMode
+          ? `Errore durante la modifica della visita: ${getErrorMessage(error)}`
+          : `Errore durante la creazione della visita: ${getErrorMessage(error)}`
+      );
     } finally {
       loading = false;
       savingWithReport = false;
     }
   }
 
-  async function handleSubmit() {
-    await submitVisit(false);
-  }
-
   async function handleSubmitAndGenerateReport() {
     await submitVisit(true);
   }
 
+  async function handleSubmitEdit() {
+    await submitVisit(false);
+  }
+
   function handleBack() {
     goto(cameFromDashboard ? `/ambulatori/${ambulatorioId}` : `/ambulatori/${ambulatorioId}/visite`);
+  }
+
+  function handleDeleteVisitDraft() {
+    if (isEditMode) {
+      handleBack();
+      return;
+    }
+
+    const confirmed =
+      typeof window === 'undefined'
+        ? true
+        : window.confirm(
+            'Confermi di eliminare la visita in compilazione? Tutti i dati non salvati andranno persi.'
+          );
+
+    if (!confirmed) {
+      return;
+    }
+
+    handleBack();
   }
 
   onMount(() => {
@@ -929,29 +1162,33 @@
 
 <div class="nuova-visita-page">
   <PageHeader
-    title="Nuova Visita"
+    title={isEditMode ? 'Modifica Visita' : 'Nuova Visita'}
     subtitle={currentStep === 'compile_visit'
-      ? 'Inserisci i dati della nuova visita medica'
+      ? (isEditMode
+          ? 'Modifica i dati della visita selezionata'
+          : 'Inserisci i dati della nuova visita medica')
       : 'Seleziona o crea un paziente per iniziare la visita'}
     showLogo={$sidebarCollapsedStore}
     onBack={handleBack}
   >
-    <svelte:fragment slot="actions">
-      <button type="button" class="btn-icon-text" on:click={openNewPatientModal}>
-        <span class="icon">
-          <Icon name="user-plus" size={24} />
-        </span>
-        <span class="text">Nuovo Paziente</span>
-      </button>
-      {#if currentStep === 'compile_visit'}
-        <button type="button" class="btn-icon-text" on:click={handleChangePaziente}>
+    <div slot="actions">
+      {#if !isEditMode}
+        <button type="button" class="btn-icon-text" on:click={openNewPatientModal}>
           <span class="icon">
-            <Icon name="user" size={24} />
+            <Icon name="user-plus" size={24} />
           </span>
-          <span class="text">Cambia Paziente</span>
+          <span class="text">Nuovo Paziente</span>
         </button>
+        {#if currentStep === 'compile_visit'}
+          <button type="button" class="btn-icon-text" on:click={handleChangePaziente}>
+            <span class="icon">
+              <Icon name="user" size={24} />
+            </span>
+            <span class="text">Cambia Paziente</span>
+          </button>
+        {/if}
       {/if}
-    </svelte:fragment>
+    </div>
   </PageHeader>
 
   {#if currentStep === 'select_patient'}
@@ -1020,7 +1257,7 @@
       </Card>
     </section>
   {:else if selectedPaziente}
-    <form on:submit|preventDefault={handleSubmit} class="page-content">
+    <div class="page-content">
     <!-- Dati Anagrafici Paziente -->
     <Card>
       <h2 class="section-title">Dati Anagrafici</h2>
@@ -1251,6 +1488,7 @@
       bind:conclusioni={conclusioni}
       bind:pianificazioneFollowUp={pianificazioneFollowUp}
       ambulatorioId={ambulatorioId}
+      showSlotSearchMonthsSelector={true}
     />
 
     {#if isBlockVisibleForAmbulatorio('firme-visita', ambulatorioId)}
@@ -1259,33 +1497,50 @@
 
     <!-- Azioni -->
     <div class="form-actions">
-      <button type="button" class="btn-secondary" on:click={handleBack} disabled={loading}>
-        Annulla
-      </button>
-      <button
-        type="button"
-        class="btn-report"
-        on:click={handleSubmitAndGenerateReport}
-        disabled={loading}
-      >
-        {loading && savingWithReport ? 'Creazione referto...' : 'Concludi e salva referto'}
-      </button>
-      <button type="submit" class="btn-primary" disabled={loading}>
-        {loading && !savingWithReport ? 'Salvataggio...' : 'Concludi Visita'}
-      </button>
+      {#if isEditMode}
+        <button type="button" class="btn-delete-visit" on:click={handleDeleteVisitDraft} disabled={loading}>
+          Annulla
+        </button>
+        <button
+          type="button"
+          class="btn-primary"
+          on:click={handleSubmitEdit}
+          disabled={loading}
+        >
+          {loading ? 'Salvataggio...' : 'Salva modifica'}
+        </button>
+      {:else}
+        <button type="button" class="btn-delete-visit" on:click={handleDeleteVisitDraft} disabled={loading}>
+          Elimina visita
+        </button>
+        <button
+          type="button"
+          class="btn-primary"
+          on:click={handleSubmitAndGenerateReport}
+          disabled={loading}
+        >
+          {loading && savingWithReport ? 'Creazione referto...' : 'Concludi e genera referto'}
+        </button>
+      {/if}
     </div>
-    </form>
+    </div>
+  {:else if isEditMode}
+    <Card>
+      <div class="loading-state">Caricamento visita...</div>
+    </Card>
   {/if}
 </div>
 
 <!-- Modal Nuovo Paziente -->
-<PazienteFormModal
-  bind:isOpen={showNewPatientModal}
-  paziente={null}
-  {ambulatorioId}
-  on:submit={handleNewPatientSubmit}
-  on:close={() => (showNewPatientModal = false)}
-/>
+{#if !isEditMode}
+  <PazienteFormModal
+    bind:isOpen={showNewPatientModal}
+    paziente={null}
+    {ambulatorioId}
+    on:submit={handleNewPatientSubmit}
+    on:close={() => (showNewPatientModal = false)}
+  />
+{/if}
 
 <style>
   .nuova-visita-page {
@@ -1298,6 +1553,12 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-6);
+  }
+
+  .loading-state {
+    padding: var(--space-8);
+    text-align: center;
+    color: var(--color-text-secondary);
   }
 
   .patient-selection-step {
@@ -1534,7 +1795,7 @@
 
   .btn-primary,
   .btn-secondary,
-  .btn-report {
+  .btn-delete-visit {
     padding: var(--space-3) var(--space-6);
     border-radius: var(--radius-md);
     font-weight: 500;
@@ -1558,21 +1819,6 @@
     cursor: not-allowed;
   }
 
-  .btn-report {
-    background: rgba(30, 58, 138, 0.08);
-    color: var(--color-primary);
-    border: 1px solid rgba(30, 58, 138, 0.24);
-  }
-
-  .btn-report:hover:not(:disabled) {
-    background: rgba(30, 58, 138, 0.14);
-  }
-
-  .btn-report:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
   .btn-secondary {
     background: transparent;
     color: var(--color-text-primary);
@@ -1581,6 +1827,16 @@
 
   .btn-secondary:hover:not(:disabled) {
     background: var(--color-bg-secondary);
+  }
+
+  .btn-delete-visit {
+    background: rgba(220, 38, 38, 0.1);
+    color: #dc2626;
+    border: 1px solid rgba(220, 38, 38, 0.35);
+  }
+
+  .btn-delete-visit:hover:not(:disabled) {
+    background: rgba(220, 38, 38, 0.16);
   }
 
   @media (max-width: 768px) {

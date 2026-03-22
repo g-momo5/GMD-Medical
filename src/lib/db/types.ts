@@ -226,6 +226,8 @@ export interface Visita {
   ambulatorio_id: number;
   paziente_id: number;
   medico_id: number;
+  previous_version_id?: number | null;
+  is_current_version?: number;
   data_visita: string;
   tipo_visita: string;
   motivo: string;
@@ -265,6 +267,8 @@ export interface CreateVisitaInput {
   ambulatorio_id: number;
   paziente_id: number;
   medico_id: number;
+  previous_version_id?: number | null;
+  is_current_version?: number;
   data_visita: string;
   tipo_visita: string;
   motivo: string;

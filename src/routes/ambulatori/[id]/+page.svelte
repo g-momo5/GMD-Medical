@@ -8,7 +8,7 @@
   import { toastStore } from '$lib/stores/toast';
   import { getAllPazienti } from '$lib/db/pazienti';
   import { getFattoriRischioCVByVisitaIds } from '$lib/db/fattori-rischio-cv';
-  import { getVisiteByAmbulatorio } from '$lib/db/visite';
+  import { getCurrentVisiteByAmbulatorio } from '$lib/db/visite';
   import type { FattoriRischioCV, Visita } from '$lib/db/types';
   import {
     parseEsamiEmatici,
@@ -191,7 +191,7 @@
 
       const [allPazienti, visite] = await Promise.all([
         getAllPazienti(),
-        getVisiteByAmbulatorio(parsedAmbulatorioId)
+        getCurrentVisiteByAmbulatorio(parsedAmbulatorioId)
       ]);
 
       const pazientiAmbulatorio = allPazienti.filter(

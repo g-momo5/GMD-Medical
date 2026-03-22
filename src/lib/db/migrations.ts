@@ -39,6 +39,8 @@ const pazientiColumns: ColumnDefinition[] = [
 ];
 
 const visiteColumns: ColumnDefinition[] = [
+  { name: 'previous_version_id', definition: 'INTEGER' },
+  { name: 'is_current_version', definition: 'INTEGER NOT NULL DEFAULT 1' },
   { name: 'bsa', definition: 'REAL' },
   { name: 'anamnesi_cardiologica', definition: 'TEXT' },
   { name: 'anamnesi_internistica', definition: 'TEXT' },
@@ -86,6 +88,7 @@ const indexStatements = [
   'CREATE INDEX IF NOT EXISTS idx_visite_ambulatorio ON visite(ambulatorio_id)',
   'CREATE INDEX IF NOT EXISTS idx_visite_paziente ON visite(paziente_id)',
   'CREATE INDEX IF NOT EXISTS idx_visite_data ON visite(data_visita)',
+  'CREATE INDEX IF NOT EXISTS idx_visite_current_ambulatorio_paziente ON visite(ambulatorio_id, paziente_id, is_current_version)',
   'CREATE INDEX IF NOT EXISTS idx_appuntamenti_ambulatorio_data ON appuntamenti(ambulatorio_id, data_ora_inizio, data_ora_fine)',
   'CREATE INDEX IF NOT EXISTS idx_appuntamenti_paziente_data ON appuntamenti(paziente_id, data_ora_inizio)',
   'CREATE UNIQUE INDEX IF NOT EXISTS ux_appuntamenti_source_visita ON appuntamenti(source_visita_id) WHERE source_visita_id IS NOT NULL',
@@ -179,6 +182,8 @@ async function createBaseTables(db: Database): Promise<void> {
       ambulatorio_id INTEGER NOT NULL,
       paziente_id INTEGER NOT NULL,
       medico_id INTEGER NOT NULL,
+      previous_version_id INTEGER,
+      is_current_version INTEGER NOT NULL DEFAULT 1,
       data_visita DATETIME NOT NULL,
       tipo_visita TEXT NOT NULL,
       motivo TEXT NOT NULL,
@@ -207,7 +212,8 @@ async function createBaseTables(db: Database): Promise<void> {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (ambulatorio_id) REFERENCES ambulatori(id) ON DELETE CASCADE,
       FOREIGN KEY (paziente_id) REFERENCES pazienti(id) ON DELETE CASCADE,
-      FOREIGN KEY (medico_id) REFERENCES users(id) ON DELETE CASCADE
+      FOREIGN KEY (medico_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (previous_version_id) REFERENCES visite(id) ON DELETE SET NULL
     )
   `);
 
@@ -511,6 +517,14 @@ async function ensureAmbulatorioStandardVisitDurationBounds(db: Database): Promi
   );
 }
 
+async function ensureVisiteVersioningDefaults(db: Database): Promise<void> {
+  await db.execute(
+    `UPDATE visite
+     SET is_current_version = 1
+     WHERE is_current_version IS NULL`
+  );
+}
+
 async function backfillFollowUpAppointments(db: Database): Promise<void> {
   const rows = await db.select<FollowUpRow[]>(
     `SELECT
@@ -726,6 +740,7 @@ export async function applyMigrations(db: Database): Promise<void> {
   await addMissingColumns(db, 'appuntamenti', appuntamentiColumns);
   await addMissingColumns(db, 'fattori_rischio_cv', fattoriRischioColumns);
   await addMissingColumns(db, 'ambulatorio_orari', ambulatorioOrariColumns);
+  await ensureVisiteVersioningDefaults(db);
   await ensureAmbulatorioStandardVisitDurationBounds(db);
   await ensureOperatingWindowDailyCapacityBounds(db);
   await ensureFattoriRischioCvReferencesVisite(db);

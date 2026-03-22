@@ -18,6 +18,7 @@
   export let conclusioni = '';
   export let pianificazioneFollowUp: PianificazioneFollowUp = createEmptyPianificazioneFollowUp();
   export let ambulatorioId: number | null = null;
+  export let showSlotSearchMonthsSelector = false;
 
   type FollowUpSegment = 'day' | 'month' | 'year' | 'hour' | 'minute';
 
@@ -30,6 +31,7 @@
   };
 
   const followUpSegmentOrder: FollowUpSegment[] = ['day', 'month', 'year', 'hour', 'minute'];
+  const slotSearchMonthsOptions = [0, 1, 2, 3, 6, 9, 12];
 
   let richTextareaComponent: any;
   let richTextareaElement: HTMLDivElement;
@@ -53,6 +55,7 @@
   let searchingFirstSlotMode: FirstSlotSearchMode | null = null;
   let nextUrgentSearchCursor: string | null = null;
   let nextQuarterHourSearchCursor: string | null = null;
+  let slotSearchStartOffsetMonths = 0;
 
   // Stato dei pulsanti di formattazione
   let isBoldActive = false;
@@ -728,6 +731,26 @@
     return `${value.slice(8, 10)}/${value.slice(5, 7)}/${value.slice(0, 4)} ${value.slice(11, 16)}`;
   }
 
+  function resolveSlotSearchStartDateTime(): string {
+    const offsetMonths = Number(slotSearchStartOffsetMonths);
+    if (!Number.isFinite(offsetMonths) || offsetMonths <= 0) {
+      return formatDateTimeForSearch(new Date());
+    }
+
+    const startDate = new Date();
+    startDate.setMonth(startDate.getMonth() + Math.floor(offsetMonths));
+    return formatDateTimeForSearch(startDate);
+  }
+
+  function formatDateTimeForSearch(date: Date): string {
+    const yyyy = String(date.getFullYear());
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mi = String(date.getMinutes()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+  }
+
   async function handleFindFirstSlot(mode: FirstSlotSearchMode, searchNext = false): Promise<void> {
     if (!ambulatorioId || searchingFirstSlotMode) {
       return;
@@ -739,16 +762,22 @@
         ? (mode === 'urgent'
             ? (nextUrgentSearchCursor ?? undefined)
             : (nextQuarterHourSearchCursor ?? undefined))
-        : undefined;
+        : resolveSlotSearchStartDateTime();
       const result =
         mode === 'urgent'
           ? await findFirstUrgentSlot({ ambulatorioId, fromDateTime })
           : await findFirstQuarterHourSlot({ ambulatorioId, fromDateTime });
 
       if (!result.found || !result.startDateTime) {
+        const monthsLabel =
+          Number(slotSearchStartOffsetMonths) <= 0
+            ? 'da ora'
+            : Number(slotSearchStartOffsetMonths) === 1
+              ? 'a partire da 1 mese'
+              : `a partire da ${slotSearchStartOffsetMonths} mesi`;
         toastStore.show(
           'info',
-          result.reasonIfNotFound || 'Nessuno slot disponibile trovato nei prossimi 180 giorni.'
+          result.reasonIfNotFound || `Nessuno slot disponibile trovato ${monthsLabel}.`
         );
         return;
       }
@@ -922,6 +951,24 @@
           </div>
 
           <div class="follow-up-actions">
+            {#if showSlotSearchMonthsSelector}
+              <div class="follow-up-months-control">
+                <label for="follow_up_slot_months" class="follow-up-label">Cerca a partire da</label>
+                <div class="follow-up-months-input-wrap">
+                  <select
+                    id="follow_up_slot_months"
+                    class="follow-up-months-select"
+                    bind:value={slotSearchStartOffsetMonths}
+                  >
+                    {#each slotSearchMonthsOptions as months}
+                      <option value={months}>
+                        {months === 0 ? 'Subito' : `${months} ${months === 1 ? 'mese' : 'mesi'}`}
+                      </option>
+                    {/each}
+                  </select>
+                </div>
+              </div>
+            {/if}
             <button
               type="button"
               class="follow-up-action-btn"
@@ -1217,8 +1264,40 @@
   .follow-up-actions {
     display: flex;
     flex-wrap: wrap;
+    align-items: flex-end;
     gap: var(--space-2);
     margin-top: var(--space-1);
+  }
+
+  .follow-up-months-control {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 150px;
+  }
+
+  .follow-up-months-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .follow-up-months-select {
+    width: 100%;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 6px 44px 6px 10px;
+    background: var(--color-bg-primary);
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .follow-up-months-select:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.1);
   }
 
   .follow-up-action-btn {

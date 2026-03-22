@@ -176,9 +176,27 @@ function sanitizeFileName(value: string): string {
   return value
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9_-]+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '');
+    .replace(/[<>:"/\\|?*\x00-\x1F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function formatVisitDateForFileName(value: string): string {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  const directMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (directMatch) {
+    return `${directMatch[3]}.${directMatch[2]}.${directMatch[1]}`;
+  }
+
+  const parsed = new Date(normalized);
+  if (!Number.isNaN(parsed.getTime())) {
+    const day = String(parsed.getDate()).padStart(2, '0');
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const year = String(parsed.getFullYear());
+    return `${day}.${month}.${year}`;
+  }
+
+  return '';
 }
 
 function buildConditionalPair(
@@ -458,12 +476,11 @@ function buildReportData(input: GenerateVisitaRefertoInput): Record<string, stri
 }
 
 function buildSuggestedFileName(input: GenerateVisitaRefertoInput): string {
-  const cognome = sanitizeFileName(input.paziente.cognome) || 'paziente';
-  const nome = sanitizeFileName(input.paziente.nome) || 'visita';
-  const dataVisita = formatDate(input.formData.data_visita).replace(/\//g, '-');
-  const visitSuffix = input.visitaId ? `_id-${input.visitaId}` : '';
+  const cognome = sanitizeFileName(input.paziente.cognome) || 'Paziente';
+  const nome = sanitizeFileName(input.paziente.nome) || 'Sconosciuto';
+  const dataVisita = formatVisitDateForFileName(input.formData.data_visita) || 'data_visita';
 
-  return `referto_dislip_${cognome}_${nome}_${dataVisita}${visitSuffix}.docx`;
+  return `${cognome} ${nome} ${dataVisita}.docx`;
 }
 
 function getDislipidemieTerapiaFolderName(terapia: TerapiaIpolipemizzante): string {

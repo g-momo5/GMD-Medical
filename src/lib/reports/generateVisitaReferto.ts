@@ -602,6 +602,14 @@ async function resolveOutputPath(input: GenerateVisitaRefertoInput): Promise<str
   return ensureDocxExtension(filePath);
 }
 
+export async function resolveVisitaRefertoOutputPaths(
+  input: GenerateVisitaRefertoInput
+): Promise<{ docxPath: string; pdfPath: string }> {
+  const docxPath = await resolveOutputPath(input);
+  const pdfPath = docxPath.replace(/\.docx$/i, '.pdf');
+  return { docxPath, pdfPath };
+}
+
 export async function buildVisitaRefertoDocxContent(
   input: GenerateVisitaRefertoInput
 ): Promise<Uint8Array> {

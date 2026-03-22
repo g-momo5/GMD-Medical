@@ -3,6 +3,8 @@
   export let title = '';
   export let size: 'sm' | 'md' | 'lg' | 'xl' = 'md';
   export let closeOnBackdropClick = true;
+  export let hideFooter = false;
+  export let compactHeader = false;
 
   function handleBackdropClick(e: MouseEvent) {
     if (!closeOnBackdropClick) {
@@ -25,7 +27,7 @@
 
 {#if open}
   <div class="modal-backdrop" on:click={handleBackdropClick} role="presentation">
-    <div class="modal modal-{size}" role="dialog" aria-modal="true">
+    <div class="modal modal-{size}" class:modal-compact-header={compactHeader} role="dialog" aria-modal="true">
       <div class="modal-header">
         <h3 class="modal-title">{title}</h3>
         <button class="modal-close" on:click={() => (open = false)} aria-label="Chiudi">
@@ -35,9 +37,11 @@
       <div class="modal-content">
         <slot />
       </div>
-      <div class="modal-footer">
-        <slot name="footer" />
-      </div>
+      {#if !hideFooter}
+        <div class="modal-footer">
+          <slot name="footer" />
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -78,6 +82,11 @@
     justify-content: space-between;
     padding: var(--space-6);
     border-bottom: 1px solid var(--color-border);
+  }
+
+  .modal-compact-header .modal-header {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
   }
 
   .modal-title {

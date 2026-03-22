@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { invoke } from '@tauri-apps/api/core';
+  import { exists, readFile } from '@tauri-apps/plugin-fs';
   import { ambulatorioStore } from '$lib/stores/ambulatorio';
   import { sidebarCollapsedStore } from '$lib/stores/sidebar';
   import { toastStore } from '$lib/stores/toast';
@@ -54,7 +56,7 @@
   let reportPreviewTitle = 'Anteprima referto';
   let reportPreviewLoading = false;
   let reportPreviewError = '';
-  let reportPreviewHost: HTMLDivElement | null = null;
+  let reportPreviewPdfUrl = '';
   let wasReportPreviewModalOpen = false;
   let visitToDelete: Visita | null = null;
   const visitEditDeleteLockedMessage = getVisitaEditDeleteLockedMessage();
@@ -213,39 +215,45 @@
     viewingReportVisitId = visita.id;
     reportPreviewTitle = `Anteprima referto - ${visita.paziente_cognome} ${visita.paziente_nome}`;
     reportPreviewError = '';
+    if (reportPreviewPdfUrl) {
+      URL.revokeObjectURL(reportPreviewPdfUrl);
+    }
+    reportPreviewPdfUrl = '';
     reportPreviewLoading = true;
     showReportPreviewModal = true;
 
     try {
-      const [{ buildVisitaRefertoDocxContent }, { renderAsync }] = await Promise.all([
-        import('$lib/reports/generateVisitaReferto'),
-        import('docx-preview')
+      const [{ generateVisitaReferto, resolveVisitaRefertoOutputPaths }] = await Promise.all([
+        import('$lib/reports/generateVisitaReferto')
       ]);
       const reportInput = await buildVisitaRefertoInput(visita);
-      const docxBytes = await buildVisitaRefertoDocxContent(reportInput);
+      const { docxPath, pdfPath } = await resolveVisitaRefertoOutputPaths(reportInput);
 
-      await tick();
-      if (!reportPreviewHost) {
-        throw new Error('Viewer referto non disponibile');
+      let resolvedPdfPath = pdfPath;
+      if (!(await exists(pdfPath))) {
+        let sourceDocxPath = docxPath;
+
+        if (!(await exists(docxPath))) {
+          const reportResult = await generateVisitaReferto(reportInput);
+          if (!reportResult.saved || !reportResult.path) {
+            throw new Error('Impossibile generare il referto DOCX');
+          }
+          sourceDocxPath = reportResult.path;
+        }
+
+        resolvedPdfPath = await invoke<string>('convert_docx_to_pdf', {
+          docxPath: sourceDocxPath
+        });
       }
 
-      reportPreviewHost.innerHTML = '';
-      const docxArrayBuffer = docxBytes.buffer.slice(
-        docxBytes.byteOffset,
-        docxBytes.byteOffset + docxBytes.byteLength
-      );
-      await renderAsync(docxArrayBuffer, reportPreviewHost, undefined, {
-        inWrapper: true,
-        renderHeaders: true,
-        renderFooters: true,
-        renderFootnotes: true,
-        useBase64URL: true
-      });
+      const pdfBytes = await readFile(resolvedPdfPath);
+      const pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+      reportPreviewPdfUrl = URL.createObjectURL(pdfBlob);
     } catch (error) {
-      const message = `Impossibile aprire l'anteprima del referto: ${getErrorMessage(error)}`;
       console.error('Errore visualizzazione referto visita:', error);
-      reportPreviewError = message;
-      toastStore.show('error', message);
+      console.error('Dettaglio errore anteprima referto:', getErrorMessage(error));
+      reportPreviewError =
+        "Anteprima non disponibile al momento. Verifica che Microsoft Word o LibreOffice siano installati correttamente.";
     } finally {
       reportPreviewLoading = false;
       viewingReportVisitId = null;
@@ -424,9 +432,10 @@
     if (!showReportPreviewModal && wasReportPreviewModalOpen) {
       reportPreviewLoading = false;
       reportPreviewError = '';
-      if (reportPreviewHost) {
-        reportPreviewHost.innerHTML = '';
+      if (reportPreviewPdfUrl) {
+        URL.revokeObjectURL(reportPreviewPdfUrl);
       }
+      reportPreviewPdfUrl = '';
     }
     wasReportPreviewModalOpen = showReportPreviewModal;
   }
@@ -644,24 +653,21 @@
   title={reportPreviewTitle}
   size="xl"
   closeOnBackdropClick={false}
+  hideFooter={true}
+  compactHeader={true}
 >
   <div class="report-preview-wrapper">
     {#if reportPreviewError}
       <div class="report-preview-error">{reportPreviewError}</div>
     {/if}
 
-    <div
-      class="report-preview-host"
-      class:is-hidden={Boolean(reportPreviewError)}
-      bind:this={reportPreviewHost}
-    ></div>
+    {#if reportPreviewPdfUrl && !reportPreviewLoading && !reportPreviewError}
+      <iframe class="report-preview-frame" src={reportPreviewPdfUrl} title="Anteprima referto PDF"></iframe>
+    {/if}
 
     {#if reportPreviewLoading}
       <div class="report-preview-loading">Caricamento anteprima referto...</div>
     {/if}
-  </div>
-  <div slot="footer">
-    <Button variant="secondary" on:click={() => (showReportPreviewModal = false)}>Chiudi</Button>
   </div>
 </Modal>
 
@@ -990,18 +996,14 @@
   .report-preview-wrapper {
     position: relative;
     min-height: 68vh;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-secondary);
   }
 
-  .report-preview-host {
+  .report-preview-frame {
+    width: 100%;
     height: 68vh;
-    overflow: auto;
-  }
-
-  .report-preview-host.is-hidden {
-    display: none;
+    border: 0;
+    border-radius: 0;
+    background: #ffffff;
   }
 
   .report-preview-loading,
@@ -1023,16 +1025,6 @@
   .report-preview-error {
     color: var(--color-danger, #b91c1c);
     font-weight: 500;
-  }
-
-  :global(.report-preview-host .docx-wrapper) {
-    padding: var(--space-4);
-    background: transparent;
-  }
-
-  :global(.report-preview-host .docx) {
-    margin: 0 auto;
-    box-shadow: var(--shadow-lg);
   }
 
   @media (max-width: 1100px) {

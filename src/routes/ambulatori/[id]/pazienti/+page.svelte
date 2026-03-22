@@ -1,14 +1,18 @@
-<script lang="ts">
+  <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
+  import { invoke } from '@tauri-apps/api/core';
+  import { exists, readFile } from '@tauri-apps/plugin-fs';
   import {
     getPazientiByAmbulatorio,
+    getPazienteById,
     createPaziente,
     updatePaziente,
     deletePaziente
   } from '$lib/db/pazienti';
   import { getVisiteByPaziente } from '$lib/db/visite';
+  import { getFattoriRischioCVByVisitaId } from '$lib/db/fattori-rischio-cv';
   import type { Paziente, CreatePazienteInput, Visita } from '$lib/db/types';
   import Button from '$lib/components/Button.svelte';
   import Input from '$lib/components/Input.svelte';
@@ -20,7 +24,16 @@
   import Icon from '$lib/components/Icon.svelte';
   import { formatDate } from '$lib/utils/formatters';
   import { calcolaCodiceFiscale } from '$lib/utils/codiceFiscale';
+  import {
+    parseEsamiEmatici,
+    parseFHAssessment,
+    parseFirmeVisita,
+    parsePianificazioneFollowUp,
+    parseTerapiaIpolipemizzante,
+    parseValutazioneRischioCV
+  } from '$lib/utils/visit-clinical';
   import type { AutocompleteItem } from '$lib/types/autocomplete';
+  import type { GenerateVisitaRefertoInput } from '$lib/reports/generateVisitaReferto';
   import { sidebarCollapsedStore } from '$lib/stores/sidebar';
 
   let ambulatorioId: number;
@@ -32,10 +45,19 @@
   let showDeleteModal = false;
   let editingPaziente: Paziente | null = null;
   let pazienteToDelete: Paziente | null = null;
+  type SelectedPazienteVisitaRow = Visita & { medico_label: string; versione_label: string };
+
   let selectedPaziente: Paziente | null = null;
   let showPatientDetailsModal = false;
-  let selectedPazienteVisite: Array<Visita & { medico_label: string; versione_label: string }> = [];
+  let selectedPazienteVisite: SelectedPazienteVisitaRow[] = [];
   let loadingSelectedPazienteVisite = false;
+  let viewingReportVisitId: number | null = null;
+  let showReportPreviewModal = false;
+  let reportPreviewTitle = 'Anteprima referto';
+  let reportPreviewLoading = false;
+  let reportPreviewError = '';
+  let reportPreviewPdfUrl = '';
+  let wasReportPreviewModalOpen = false;
 
   // Dati per autocomplete
   let comuniData: AutocompleteItem[] = [];
@@ -183,6 +205,124 @@
       if (selectedPaziente?.id === pazienteId) {
         loadingSelectedPazienteVisite = false;
       }
+    }
+  }
+
+  function getErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+
+    if (typeof error === 'string' && error.trim()) {
+      return error;
+    }
+
+    if (error && typeof error === 'object') {
+      const maybeMessage = 'message' in error ? (error as { message?: unknown }).message : undefined;
+      if (typeof maybeMessage === 'string' && maybeMessage.trim()) {
+        return maybeMessage;
+      }
+    }
+
+    return 'Errore sconosciuto';
+  }
+
+  async function buildVisitaRefertoInput(visita: Visita): Promise<GenerateVisitaRefertoInput> {
+    const [paziente, fattori] = await Promise.all([
+      getPazienteById(visita.paziente_id),
+      getFattoriRischioCVByVisitaId(visita.id)
+    ]);
+
+    if (!paziente) {
+      throw new Error('Paziente non trovato per questa visita');
+    }
+
+    const esami = parseEsamiEmatici(visita.esami_ematici);
+    const valutazioneRischio = parseValutazioneRischioCV(visita.valutazione_rischio_cv, esami);
+
+    return {
+      paziente,
+      formData: {
+        data_visita: visita.data_visita || '',
+        tipo_visita: visita.tipo_visita || '',
+        motivo: visita.motivo || '',
+        altezza: visita.altezza != null ? String(visita.altezza) : '',
+        peso: visita.peso != null ? String(visita.peso) : '',
+        bmi: visita.bmi != null ? String(visita.bmi) : ''
+      },
+      fattoriRischio: {
+        familiarita: Boolean(fattori?.familiarita),
+        familiarita_note: fattori?.familiarita_note || '',
+        ipertensione: Boolean(fattori?.ipertensione),
+        diabete: Boolean(fattori?.diabete),
+        diabete_durata: fattori?.diabete_durata || '',
+        diabete_tipo: fattori?.diabete_tipo || '',
+        dislipidemia: Boolean(fattori?.dislipidemia),
+        obesita: Boolean(fattori?.obesita),
+        fumo: fattori?.fumo || '',
+        fumo_ex_eta: fattori?.fumo_ex_eta || ''
+      },
+      fhAssessment: parseFHAssessment(visita.fh_assessment),
+      anamnesiPatologicaRemota: visita.anamnesi_cardiologica || '',
+      terapiaIpolipemizzante: parseTerapiaIpolipemizzante(visita.terapia_ipolipemizzante),
+      terapiaDomiciliare: visita.terapia_domiciliare || '',
+      esamiEmatici: esami,
+      valutazioneRischioCV: valutazioneRischio,
+      conclusioni: visita.conclusioni || '',
+      pianificazioneFollowUp: parsePianificazioneFollowUp(visita.pianificazione_followup),
+      firmeVisita: parseFirmeVisita(visita.firme_visita),
+      visitaId: visita.id
+    };
+  }
+
+  async function handleViewSelectedPazienteVisitaReport(visita: SelectedPazienteVisitaRow): Promise<void> {
+    if (viewingReportVisitId !== null) {
+      return;
+    }
+
+    viewingReportVisitId = visita.id;
+    reportPreviewTitle = `Anteprima referto - ${visita.paziente_cognome} ${visita.paziente_nome}`;
+    reportPreviewError = '';
+    if (reportPreviewPdfUrl) {
+      URL.revokeObjectURL(reportPreviewPdfUrl);
+    }
+    reportPreviewPdfUrl = '';
+    reportPreviewLoading = true;
+    showReportPreviewModal = true;
+
+    try {
+      const [{ generateVisitaReferto, resolveVisitaRefertoOutputPaths }] = await Promise.all([
+        import('$lib/reports/generateVisitaReferto')
+      ]);
+      const reportInput = await buildVisitaRefertoInput(visita);
+      const { docxPath, pdfPath } = await resolveVisitaRefertoOutputPaths(reportInput);
+
+      let resolvedPdfPath = pdfPath;
+      if (!(await exists(pdfPath))) {
+        let sourceDocxPath = docxPath;
+
+        if (!(await exists(docxPath))) {
+          const reportResult = await generateVisitaReferto(reportInput);
+          if (!reportResult.saved || !reportResult.path) {
+            throw new Error('Impossibile generare il referto DOCX');
+          }
+          sourceDocxPath = reportResult.path;
+        }
+
+        resolvedPdfPath = await invoke<string>('convert_docx_to_pdf', {
+          docxPath: sourceDocxPath
+        });
+      }
+
+      const pdfBytes = await readFile(resolvedPdfPath);
+      const pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+      reportPreviewPdfUrl = URL.createObjectURL(pdfBlob);
+    } catch (error) {
+      console.error('Errore visualizzazione referto visita da ricerca paziente:', error);
+      reportPreviewError = `Anteprima non disponibile: ${getErrorMessage(error)}`;
+    } finally {
+      reportPreviewLoading = false;
+      viewingReportVisitId = null;
     }
   }
 
@@ -368,6 +508,18 @@
     { value: 'F', label: 'Femmina' },
     { value: 'Altro', label: 'Altro' }
   ];
+
+  $: {
+    if (!showReportPreviewModal && wasReportPreviewModalOpen) {
+      reportPreviewLoading = false;
+      reportPreviewError = '';
+      if (reportPreviewPdfUrl) {
+        URL.revokeObjectURL(reportPreviewPdfUrl);
+      }
+      reportPreviewPdfUrl = '';
+    }
+    wasReportPreviewModalOpen = showReportPreviewModal;
+  }
 </script>
 
 <div class="pazienti-page">
@@ -478,8 +630,19 @@
                 columns={visiteTableColumns}
                 data={selectedPazienteVisite}
                 emptyMessage="Nessuna visita trovata per questo paziente"
-                showActions={false}
-              />
+                showActions={true}
+              >
+                <svelte:fragment slot="actions" let:row>
+                  <button
+                    class="btn-icon"
+                    on:click|stopPropagation={() => handleViewSelectedPazienteVisitaReport(row)}
+                    title="Visualizza referto"
+                    disabled={viewingReportVisitId !== null}
+                  >
+                    <Icon name="eye" size={16} />
+                  </button>
+                </svelte:fragment>
+              </Table>
             {/if}
           </div>
         {/if}
@@ -745,6 +908,29 @@
   </svelte:fragment>
 </Modal>
 
+<Modal
+  bind:open={showReportPreviewModal}
+  title={reportPreviewTitle}
+  size="xl"
+  closeOnBackdropClick={false}
+  hideFooter={true}
+  compactHeader={true}
+>
+  <div class="report-preview-wrapper">
+    {#if reportPreviewError}
+      <div class="report-preview-error">{reportPreviewError}</div>
+    {/if}
+
+    {#if reportPreviewPdfUrl && !reportPreviewLoading && !reportPreviewError}
+      <iframe class="report-preview-frame" src={reportPreviewPdfUrl} title="Anteprima referto PDF"></iframe>
+    {/if}
+
+    {#if reportPreviewLoading}
+      <div class="report-preview-loading">Caricamento anteprima referto...</div>
+    {/if}
+  </div>
+</Modal>
+
 <style>
   .pazienti-page {
     min-height: 100vh;
@@ -903,6 +1089,40 @@
     font-weight: 600;
     color: var(--color-text);
     word-break: break-word;
+  }
+
+  .report-preview-wrapper {
+    position: relative;
+    min-height: 68vh;
+  }
+
+  .report-preview-frame {
+    width: 100%;
+    height: 68vh;
+    border: 0;
+    border-radius: 0;
+    background: #ffffff;
+  }
+
+  .report-preview-loading,
+  .report-preview-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: var(--space-6);
+  }
+
+  .report-preview-loading {
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--color-bg-primary) 82%, transparent);
+    color: var(--color-text-secondary);
+  }
+
+  .report-preview-error {
+    color: var(--color-danger, #b91c1c);
+    font-weight: 500;
   }
 
   :global(.btn-icon) {

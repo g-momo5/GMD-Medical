@@ -24,7 +24,6 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-sql": "^2.3.1",
     "bcryptjs": "^3.0.3",
-    "docx-preview": "^0.3.7",
     "docxtemplater": "^3.68.3",
     "jspdf": "^4.2.1",
     "lucide-svelte": "^0.577.0",

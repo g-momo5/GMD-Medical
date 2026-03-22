@@ -602,11 +602,17 @@ async function resolveOutputPath(input: GenerateVisitaRefertoInput): Promise<str
   return ensureDocxExtension(filePath);
 }
 
+export async function buildVisitaRefertoDocxContent(
+  input: GenerateVisitaRefertoInput
+): Promise<Uint8Array> {
+  const template = await loadTemplate();
+  return renderTemplate(template, buildReportData(input));
+}
+
 export async function generateVisitaReferto(
   input: GenerateVisitaRefertoInput
 ): Promise<GenerateVisitaRefertoResult> {
-  const template = await loadTemplate();
-  const content = renderTemplate(template, buildReportData(input));
+  const content = await buildVisitaRefertoDocxContent(input);
   const resolvedPath = await resolveOutputPath(input);
 
   await writeFile(resolvedPath, content, { create: true });

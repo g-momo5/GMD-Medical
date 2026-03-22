@@ -1,18 +1,25 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
   import { ambulatorioStore } from '$lib/stores/ambulatorio';
   import { sidebarCollapsedStore } from '$lib/stores/sidebar';
   import { toastStore } from '$lib/stores/toast';
-  import {
-    getVisiteByAmbulatorio,
-    deleteVisita
-  } from '$lib/db/visite';
+  import { getPazienteById } from '$lib/db/pazienti';
+  import { getFattoriRischioCVByVisitaId } from '$lib/db/fattori-rischio-cv';
+  import { getVisiteByAmbulatorio, deleteVisita } from '$lib/db/visite';
   import {
     getVisitaEditDeleteLockedMessage,
     getVisitaPreviousVersionLockedMessage,
     isVisitaWithinEditDeleteWindow
   } from '$lib/utils/visite-permissions';
+  import {
+    parseEsamiEmatici,
+    parseFHAssessment,
+    parseFirmeVisita,
+    parsePianificazioneFollowUp,
+    parseTerapiaIpolipemizzante,
+    parseValutazioneRischioCV
+  } from '$lib/utils/visit-clinical';
   import Card from '$lib/components/Card.svelte';
   import Input from '$lib/components/Input.svelte';
   import Select from '$lib/components/Select.svelte';
@@ -21,6 +28,7 @@
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import type { Visita } from '$lib/db/types';
+  import type { GenerateVisitaRefertoInput } from '$lib/reports/generateVisitaReferto';
 
   $: ambulatorio = $ambulatorioStore.current;
 
@@ -41,6 +49,13 @@
   let hasColumnFilters = false;
   let tipoFilterOptions: Array<{ value: string; label: string }> = [];
   let showDeleteModal = false;
+  let viewingReportVisitId: number | null = null;
+  let showReportPreviewModal = false;
+  let reportPreviewTitle = 'Anteprima referto';
+  let reportPreviewLoading = false;
+  let reportPreviewError = '';
+  let reportPreviewHost: HTMLDivElement | null = null;
+  let wasReportPreviewModalOpen = false;
   let visitToDelete: Visita | null = null;
   const visitEditDeleteLockedMessage = getVisitaEditDeleteLockedMessage();
   const visitPreviousVersionLockedMessage = getVisitaPreviousVersionLockedMessage();
@@ -139,6 +154,101 @@
     } catch (error) {
       console.error('Errore eliminazione visita:', error);
       toastStore.show('error', `Errore durante l'eliminazione della visita: ${getErrorMessage(error)}`);
+    }
+  }
+
+  async function buildVisitaRefertoInput(visita: Visita): Promise<GenerateVisitaRefertoInput> {
+    const [paziente, fattori] = await Promise.all([
+      getPazienteById(visita.paziente_id),
+      getFattoriRischioCVByVisitaId(visita.id)
+    ]);
+
+    if (!paziente) {
+      throw new Error('Paziente non trovato per questa visita');
+    }
+
+    const esami = parseEsamiEmatici(visita.esami_ematici);
+    const valutazioneRischio = parseValutazioneRischioCV(visita.valutazione_rischio_cv, esami);
+
+    return {
+      paziente,
+      formData: {
+        data_visita: visita.data_visita || '',
+        tipo_visita: visita.tipo_visita || '',
+        motivo: visita.motivo || '',
+        altezza: visita.altezza != null ? String(visita.altezza) : '',
+        peso: visita.peso != null ? String(visita.peso) : '',
+        bmi: visita.bmi != null ? String(visita.bmi) : ''
+      },
+      fattoriRischio: {
+        familiarita: Boolean(fattori?.familiarita),
+        familiarita_note: fattori?.familiarita_note || '',
+        ipertensione: Boolean(fattori?.ipertensione),
+        diabete: Boolean(fattori?.diabete),
+        diabete_durata: fattori?.diabete_durata || '',
+        diabete_tipo: fattori?.diabete_tipo || '',
+        dislipidemia: Boolean(fattori?.dislipidemia),
+        obesita: Boolean(fattori?.obesita),
+        fumo: fattori?.fumo || '',
+        fumo_ex_eta: fattori?.fumo_ex_eta || ''
+      },
+      fhAssessment: parseFHAssessment(visita.fh_assessment),
+      anamnesiPatologicaRemota: visita.anamnesi_cardiologica || '',
+      terapiaIpolipemizzante: parseTerapiaIpolipemizzante(visita.terapia_ipolipemizzante),
+      terapiaDomiciliare: visita.terapia_domiciliare || '',
+      esamiEmatici: esami,
+      valutazioneRischioCV: valutazioneRischio,
+      conclusioni: visita.conclusioni || '',
+      pianificazioneFollowUp: parsePianificazioneFollowUp(visita.pianificazione_followup),
+      firmeVisita: parseFirmeVisita(visita.firme_visita),
+      visitaId: visita.id
+    };
+  }
+
+  async function handleViewVisitReport(visita: Visita): Promise<void> {
+    if (viewingReportVisitId !== null) {
+      return;
+    }
+
+    viewingReportVisitId = visita.id;
+    reportPreviewTitle = `Anteprima referto - ${visita.paziente_cognome} ${visita.paziente_nome}`;
+    reportPreviewError = '';
+    reportPreviewLoading = true;
+    showReportPreviewModal = true;
+
+    try {
+      const [{ buildVisitaRefertoDocxContent }, { renderAsync }] = await Promise.all([
+        import('$lib/reports/generateVisitaReferto'),
+        import('docx-preview')
+      ]);
+      const reportInput = await buildVisitaRefertoInput(visita);
+      const docxBytes = await buildVisitaRefertoDocxContent(reportInput);
+
+      await tick();
+      if (!reportPreviewHost) {
+        throw new Error('Viewer referto non disponibile');
+      }
+
+      reportPreviewHost.innerHTML = '';
+      const docxArrayBuffer = docxBytes.buffer.slice(
+        docxBytes.byteOffset,
+        docxBytes.byteOffset + docxBytes.byteLength
+      );
+      await renderAsync(docxArrayBuffer, reportPreviewHost, undefined, {
+        inWrapper: true,
+        renderHeaders: true,
+        renderFooters: true,
+        renderFootnotes: true,
+        useBase64URL: true
+      });
+    } catch (error) {
+      const message = `Impossibile aprire l'anteprima del referto: ${getErrorMessage(error)}`;
+      console.error('Errore visualizzazione referto visita:', error);
+      reportPreviewError = message;
+      toastStore.show('error', message);
+    } finally {
+      reportPreviewLoading = false;
+      viewingReportVisitId = null;
     }
   }
 
@@ -309,6 +419,17 @@
       return result * directionMultiplier;
     });
   }
+
+  $: {
+    if (!showReportPreviewModal && wasReportPreviewModalOpen) {
+      reportPreviewLoading = false;
+      reportPreviewError = '';
+      if (reportPreviewHost) {
+        reportPreviewHost.innerHTML = '';
+      }
+    }
+    wasReportPreviewModalOpen = showReportPreviewModal;
+  }
 </script>
 
 <div class="visite-page">
@@ -467,6 +588,14 @@
                       <div class="actions">
                         <button
                           class="btn-icon"
+                          on:click={() => handleViewVisitReport(visita)}
+                          title="Visualizza"
+                          disabled={viewingReportVisitId !== null}
+                        >
+                          <Icon name="eye" size={16} />
+                        </button>
+                        <button
+                          class="btn-icon"
                           on:click={() => handleEditVisit(visita)}
                           title={canMutateVisita(visita) ? 'Modifica' : (getVisitaMutationBlockedReason(visita) || '')}
                           disabled={!canMutateVisita(visita)}
@@ -507,6 +636,32 @@
       Annulla
     </Button>
     <Button variant="primary" on:click={handleDeleteVisit}> Conferma Eliminazione </Button>
+  </div>
+</Modal>
+
+<Modal
+  bind:open={showReportPreviewModal}
+  title={reportPreviewTitle}
+  size="xl"
+  closeOnBackdropClick={false}
+>
+  <div class="report-preview-wrapper">
+    {#if reportPreviewError}
+      <div class="report-preview-error">{reportPreviewError}</div>
+    {/if}
+
+    <div
+      class="report-preview-host"
+      class:is-hidden={Boolean(reportPreviewError)}
+      bind:this={reportPreviewHost}
+    ></div>
+
+    {#if reportPreviewLoading}
+      <div class="report-preview-loading">Caricamento anteprima referto...</div>
+    {/if}
+  </div>
+  <div slot="footer">
+    <Button variant="secondary" on:click={() => (showReportPreviewModal = false)}>Chiudi</Button>
   </div>
 </Modal>
 
@@ -725,6 +880,7 @@
     padding: var(--space-6) var(--space-4);
   }
 
+
   .table tbody tr {
     transition: background 0.2s;
   }
@@ -831,6 +987,54 @@
     background: none;
   }
 
+  .report-preview-wrapper {
+    position: relative;
+    min-height: 68vh;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-secondary);
+  }
+
+  .report-preview-host {
+    height: 68vh;
+    overflow: auto;
+  }
+
+  .report-preview-host.is-hidden {
+    display: none;
+  }
+
+  .report-preview-loading,
+  .report-preview-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: var(--space-6);
+  }
+
+  .report-preview-loading {
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--color-bg-primary) 82%, transparent);
+    color: var(--color-text-secondary);
+  }
+
+  .report-preview-error {
+    color: var(--color-danger, #b91c1c);
+    font-weight: 500;
+  }
+
+  :global(.report-preview-host .docx-wrapper) {
+    padding: var(--space-4);
+    background: transparent;
+  }
+
+  :global(.report-preview-host .docx) {
+    margin: 0 auto;
+    box-shadow: var(--shadow-lg);
+  }
+
   @media (max-width: 1100px) {
     .filters-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -846,5 +1050,6 @@
     .filters-grid {
       grid-template-columns: 1fr;
     }
+
   }
 </style>

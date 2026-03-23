@@ -403,93 +403,209 @@
 
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
-    const leftMargin = 44;
-    const rightMargin = 44;
-    const maxTextWidth = pageWidth - leftMargin - rightMargin;
-    const lineHeight = 15;
-    let y = 48;
+    const margins = {
+      left: 36,
+      right: 36,
+      top: 34,
+      bottom: 42
+    };
+    const contentWidth = pageWidth - margins.left - margins.right;
+    const headerHeight = 94;
+    const footerHeight = 24;
+    const tableHeaderHeight = 24;
+    const cellPaddingX = 7;
+    const cellPaddingY = 6;
+    const rowLineHeight = 12;
+    const minRowHeight = 26;
+
+    const colors = {
+      headerFill: [30, 64, 175] as [number, number, number],
+      headerText: [255, 255, 255] as [number, number, number],
+      tableHeaderFill: [226, 232, 240] as [number, number, number],
+      tableBorder: [203, 213, 225] as [number, number, number],
+      zebraFill: [248, 250, 252] as [number, number, number],
+      textPrimary: [15, 23, 42] as [number, number, number],
+      textSecondary: [71, 85, 105] as [number, number, number]
+    };
 
     const ambulatorioName = currentAmbulatorio?.nome || `Ambulatorio ${ambulatorioId}`;
     const prettyDate = formatLongDateLabel(dateValue) || dateValue;
+    const generatedAt = new Intl.DateTimeFormat('it-IT', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(new Date());
 
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(16);
-    doc.text('Elenco Pazienti Giornaliero', leftMargin, y);
-    y += 22;
+    const columns = [
+      { key: 'timeRange', title: 'Orario', width: 82 },
+      { key: 'patient', title: 'Paziente', width: 188 },
+      { key: 'phone', title: 'Telefono', width: 108 },
+      { key: 'reason', title: 'Motivo', width: contentWidth - 82 - 188 - 108 }
+    ] as const;
 
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(11);
-    doc.text(`Ambulatorio: ${ambulatorioName}`, leftMargin, y);
-    y += 16;
-    doc.text(`Data: ${prettyDate}`, leftMargin, y);
-    y += 16;
-    doc.text(`Totale appuntamenti: ${appointments.length}`, leftMargin, y);
-    y += 20;
-
-    const printLine = (line: string) => {
-      const wrapped = doc.splitTextToSize(line, maxTextWidth) as string[];
-      const blockHeight = wrapped.length * lineHeight;
-      if (y + blockHeight > pageHeight - 44) {
-        doc.addPage();
-        y = 48;
-      }
-      doc.text(wrapped, leftMargin, y);
-      y += blockHeight + 4;
+    type AppointmentPrintRow = {
+      timeRange: string;
+      patient: string;
+      phone: string;
+      reason: string;
     };
 
-    if (appointments.length === 0) {
-      doc.setFont('helvetica', 'italic');
-      printLine('Nessun appuntamento programmato per questa giornata.');
-    } else {
+    const rows: AppointmentPrintRow[] =
+      appointments.length > 0
+        ? appointments.map((appointment) => {
+            const start = normalizeAppuntamentoDateTimeInput(appointment.data_ora_inizio).slice(11, 16);
+            const end = normalizeAppuntamentoDateTimeInput(appointment.data_ora_fine).slice(11, 16);
+            const patientName = [appointment.paziente_cognome, appointment.paziente_nome]
+              .filter(Boolean)
+              .join(' ')
+              .trim() || 'Paziente non specificato';
+            const birthDate = formatBirthDateLabel(appointment.paziente_data_nascita);
+            const phone = String(appointment.paziente_telefono || '').trim();
+            const reason = String(appointment.motivo || '').trim();
+            const patientLabel = birthDate ? `${patientName} (${birthDate})` : patientName;
+
+            return {
+              timeRange: `${start}-${end}`,
+              patient: patientLabel,
+              phone: phone || '-',
+              reason: reason || '-'
+            };
+          })
+        : [
+            {
+              timeRange: '-',
+              patient: 'Nessun appuntamento programmato per questa giornata.',
+              phone: '-',
+              reason: '-'
+            }
+          ];
+
+    let pageNumber = 1;
+    let y = 0;
+
+    const drawFooter = (pageIndex: number): void => {
+      const footerY = pageHeight - margins.bottom;
+      doc.setDrawColor(...colors.tableBorder);
+      doc.setLineWidth(0.7);
+      doc.line(margins.left, footerY - 12, pageWidth - margins.right, footerY - 12);
+
       doc.setFont('helvetica', 'normal');
-      for (const appointment of appointments) {
-        const start = normalizeAppuntamentoDateTimeInput(appointment.data_ora_inizio).slice(11, 16);
-        const end = normalizeAppuntamentoDateTimeInput(appointment.data_ora_fine).slice(11, 16);
-        const patientName = [appointment.paziente_cognome, appointment.paziente_nome]
-          .filter(Boolean)
-          .join(' ')
-          .trim() || 'Paziente non specificato';
-        const birthDate = formatBirthDateLabel(appointment.paziente_data_nascita);
-        const reason = String(appointment.motivo || '').trim();
-        const suffix = reason ? ` - ${reason}` : '';
-        const birthSuffix = birthDate ? ` (${birthDate})` : '';
-        printLine(`${start}-${end}  ${patientName}${birthSuffix}${suffix}`);
+      doc.setFontSize(9);
+      doc.setTextColor(...colors.textSecondary);
+      doc.text(`Generato il ${generatedAt}`, margins.left, footerY);
+      doc.text(`Pagina ${pageIndex}`, pageWidth - margins.right, footerY, { align: 'right' });
+    };
+
+    const drawHeaderAndTableHeader = (pageIndex: number): number => {
+      let currentY = margins.top;
+
+      doc.setFillColor(...colors.headerFill);
+      doc.roundedRect(margins.left, currentY, contentWidth, headerHeight, 8, 8, 'F');
+
+      doc.setTextColor(...colors.headerText);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(17);
+      doc.text('Agenda Giornaliera', margins.left + 14, currentY + 25);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(11);
+      doc.text(ambulatorioName, margins.left + 14, currentY + 44);
+      doc.text(prettyDate, margins.left + 14, currentY + 60);
+
+      doc.setFillColor(255, 255, 255);
+      doc.roundedRect(pageWidth - margins.right - 132, currentY + 16, 118, 50, 6, 6, 'F');
+      doc.setTextColor(...colors.headerFill);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.text('Totale visite', pageWidth - margins.right - 73, currentY + 34, { align: 'center' });
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(20);
+      doc.text(String(appointments.length), pageWidth - margins.right - 73, currentY + 57, {
+        align: 'center'
+      });
+
+      currentY += headerHeight + 14;
+
+      doc.setFillColor(...colors.tableHeaderFill);
+      doc.setDrawColor(...colors.tableBorder);
+      doc.setLineWidth(0.8);
+      doc.rect(margins.left, currentY, contentWidth, tableHeaderHeight, 'FD');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(...colors.textPrimary);
+
+      let columnX = margins.left;
+      for (const column of columns) {
+        doc.text(column.title, columnX + cellPaddingX, currentY + 16);
+        columnX += column.width;
+        if (columnX < margins.left + contentWidth) {
+          doc.line(columnX, currentY, columnX, currentY + tableHeaderHeight);
+        }
       }
+
+      drawFooter(pageIndex);
+      return currentY + tableHeaderHeight;
+    };
+
+    const addPageWithHeader = (): void => {
+      if (pageNumber > 1) {
+        doc.addPage();
+      }
+      y = drawHeaderAndTableHeader(pageNumber);
+    };
+
+    const getCellLines = (text: string, width: number): string[] => {
+      const normalized = text.trim() || '-';
+      return doc.splitTextToSize(normalized, width - cellPaddingX * 2) as string[];
+    };
+
+    addPageWithHeader();
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+
+      const cellLines = columns.map((column) => getCellLines(row[column.key], column.width));
+      const rowLineCount = Math.max(...cellLines.map((lines) => lines.length));
+      const rowHeight = Math.max(minRowHeight, rowLineCount * rowLineHeight + cellPaddingY * 2);
+
+      const maxContentY = pageHeight - margins.bottom - footerHeight;
+      if (y + rowHeight > maxContentY) {
+        pageNumber += 1;
+        addPageWithHeader();
+      }
+
+      if (index % 2 !== 0) {
+        doc.setFillColor(...colors.zebraFill);
+        doc.rect(margins.left, y, contentWidth, rowHeight, 'F');
+      }
+
+      doc.setDrawColor(...colors.tableBorder);
+      doc.setLineWidth(0.6);
+      doc.rect(margins.left, y, contentWidth, rowHeight, 'S');
+
+      let columnX = margins.left;
+      for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+        const column = columns[columnIndex];
+        const lines = cellLines[columnIndex];
+        doc.setTextColor(...colors.textPrimary);
+        doc.text(lines, columnX + cellPaddingX, y + cellPaddingY + 9);
+
+        columnX += column.width;
+        if (columnX < margins.left + contentWidth) {
+          doc.line(columnX, y, columnX, y + rowHeight);
+        }
+      }
+
+      y += rowHeight;
     }
 
-    doc.autoPrint();
     const arrayBuffer = doc.output('arraybuffer');
     return new Uint8Array(arrayBuffer);
-  }
-
-  function triggerPdfPrint(pdfBytes: Uint8Array): void {
-    if (typeof window === 'undefined' || typeof document === 'undefined') {
-      return;
-    }
-
-    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.width = '1px';
-    iframe.style.height = '1px';
-    iframe.style.border = '0';
-    iframe.style.opacity = '0';
-    iframe.style.pointerEvents = 'none';
-    iframe.src = url;
-
-    iframe.onload = () => {
-      setTimeout(() => {
-        iframe.contentWindow?.focus();
-        iframe.contentWindow?.print();
-      }, 240);
-    };
-
-    document.body.appendChild(iframe);
-    window.setTimeout(() => {
-      URL.revokeObjectURL(url);
-      iframe.remove();
-    }, 60_000);
   }
 
   async function printDailyAgenda(): Promise<void> {
@@ -521,23 +637,8 @@
       );
 
       await writeFile(outputPath, pdfBytes, { create: true });
-
-      let printTriggered = false;
-      try {
-        triggerPdfPrint(pdfBytes);
-        printTriggered = true;
-      } catch (printError) {
-        console.warn('Stampa PDF da webview non disponibile:', printError);
-      }
-
-      if (!printTriggered) {
-        await openPath(outputPath);
-      }
-
-      toastStore.show(
-        'success',
-        `PDF agenda creato${printTriggered ? ' e inviato in stampa' : ''}: ${outputPath}`
-      );
+      await openPath(outputPath);
+      toastStore.show('success', `PDF agenda creato e aperto in anteprima: ${outputPath}`);
     } catch (error) {
       console.error('Errore stampa agenda giornaliera:', error);
       toastStore.show('error', `Errore stampa agenda giornaliera: ${getErrorMessage(error)}`);
@@ -1656,8 +1757,8 @@
 
 <div class="appuntamenti-page">
   <PageHeader
-    title="Appuntamenti"
-    subtitle="Gestisci il calendario appuntamenti (mese e giorno)"
+    title="Calendario"
+    subtitle="Gestisci il calendario appuntamenti."
     showLogo={$sidebarCollapsedStore}
     onBack={() => goto(`/ambulatori/${ambulatorioId}`)}
   >
@@ -1666,7 +1767,7 @@
         <span class="icon">
           <Icon name="calendar-plus" size={22} />
         </span>
-        <span class="text">Nuovo Appuntamento</span>
+        <span class="text">Nuovo App.</span>
       </button>
       {#if currentView === 'timeGridDay'}
         <button

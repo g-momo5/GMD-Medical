@@ -38,7 +38,7 @@
     },
     {
       id: 'appuntamenti',
-      label: 'Appuntamenti',
+      label: 'Calendario',
       icon: 'calendar-days',
       path: `/ambulatori/${ambulatorioId}/appuntamenti`
     },

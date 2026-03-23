@@ -475,60 +475,58 @@
       </Card>
     {:else}
       <div class="filters-sticky">
-        <Card padding="sm">
-          <div class="filters-panel">
-            <div class="filters-grid">
-              <Input
-                type="date"
-                label="Data dal"
-                bind:value={filterDataFrom}
-              />
-              <Input
-                type="date"
-                label="Data al"
-                bind:value={filterDataTo}
-              />
-              <Input
-                type="text"
-                label="Paziente"
-                placeholder="Cognome o nome"
-                bind:value={filterPaziente}
-              />
-              <Select
-                id="filtro-tipo-visita"
-                label="Tipo"
-                placeholder=""
-                options={tipoFilterOptions}
-                bind:value={filterTipo}
-              />
-              <Input
-                type="text"
-                label="Motivo"
-                placeholder="Filtra motivo"
-                bind:value={filterMotivo}
-              />
-              <Input
-                type="text"
-                label="Medico"
-                placeholder="Cognome o nome"
-                bind:value={filterMedico}
-              />
-            </div>
-            <div class="filters-actions">
-              <span class="filters-count">
-                {sortedVisite.length} {sortedVisite.length === 1 ? 'visita' : 'visite'}
-              </span>
-              <button
-                type="button"
-                class="btn-filter-reset"
-                on:click={resetColumnFilters}
-                disabled={!hasColumnFilters}
-              >
-                Azzera filtri
-              </button>
-            </div>
+        <div class="filters-panel">
+          <div class="filters-grid">
+            <Input
+              type="date"
+              label="Data dal"
+              bind:value={filterDataFrom}
+            />
+            <Input
+              type="date"
+              label="Data al"
+              bind:value={filterDataTo}
+            />
+            <Input
+              type="text"
+              label="Paziente"
+              placeholder="Cognome o nome"
+              bind:value={filterPaziente}
+            />
+            <Select
+              id="filtro-tipo-visita"
+              label="Tipo"
+              placeholder=""
+              options={tipoFilterOptions}
+              bind:value={filterTipo}
+            />
+            <Input
+              type="text"
+              label="Motivo"
+              placeholder="Filtra motivo"
+              bind:value={filterMotivo}
+            />
+            <Input
+              type="text"
+              label="Medico"
+              placeholder="Cognome o nome"
+              bind:value={filterMedico}
+            />
           </div>
-        </Card>
+          <div class="filters-actions">
+            <span class="filters-count">
+              {sortedVisite.length} {sortedVisite.length === 1 ? 'visita' : 'visite'}
+            </span>
+            <button
+              type="button"
+              class="btn-filter-reset"
+              on:click={resetColumnFilters}
+              disabled={!hasColumnFilters}
+            >
+              Azzera filtri
+            </button>
+          </div>
+        </div>
       </div>
 
       <Card padding="sm">
@@ -783,23 +781,23 @@
   }
 
   .filters-panel {
-    padding: var(--space-3);
+    padding: var(--space-5);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-xl);
     background: var(--color-bg-secondary);
   }
 
   .filters-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: var(--space-2);
+    gap: var(--space-3);
   }
 
   .filters-actions {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-top: var(--space-2);
+    margin-top: var(--space-3);
   }
 
   .filters-count {
